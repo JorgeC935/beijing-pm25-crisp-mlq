@@ -3,147 +3,535 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Pronóstico académico de PM2.5 a 24 horas para la estación Wanliu de Beijing.">
   <title>Wanliu · Pronóstico de PM2.5</title>
   <style>
-    :root{font-family:system-ui,Segoe UI,Arial,sans-serif;color:#203040;background:#f3f5f7}
-    *{box-sizing:border-box}body{margin:0}header{background:#162b43;color:white;padding:27px max(18px,calc((100vw - 1150px)/2))}header h1{margin:0 0 5px;font-size:1.75rem}header p{margin:0;color:#c6d6e5}
-    main{max-width:1150px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.card{background:white;border:1px solid #dce4ea;border-radius:12px;padding:20px;box-shadow:0 2px 10px #1934500a}h2{margin:0 0 13px;font-size:1.15rem}.wide{grid-column:1/-1}
-    label{display:block;margin-bottom:10px;color:#31455a;font-size:.88rem;font-weight:600}input,select{width:100%;margin-top:5px;border:1px solid #c9d6df;border-radius:7px;font:inherit;padding:10px;background:white;color:#213447}input[type=file]{padding:7px}
-    button{background:#176ea9;border:0;border-radius:7px;color:white;font-size:.93rem;font-weight:650;padding:10px 16px;cursor:pointer}button:hover{background:#115581}button:disabled{opacity:.6;cursor:wait}.secondary{background:#e9eff4;color:#183b57}.secondary:hover{background:#dbe7f0}
-    .row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.helper{font-size:.84rem;color:#52687c;line-height:1.55}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.82rem;background:#f5f7fa;border:1px solid #dde5ec;padding:10px;border-radius:7px;max-height:240px;overflow:auto}
-    .scroll{overflow:auto;max-height:375px}table{width:100%;border-collapse:collapse;font-size:.87rem}th,td{border-bottom:1px solid #e3eaf0;padding:8px;text-align:left;white-space:nowrap}th{background:#f1f5f8;position:sticky;top:0}footer{text-align:center;color:#607488;padding:28px;font-size:.83rem}#connection{font-weight:600}
-    @media(max-width:750px){main{grid-template-columns:1fr}.wide{grid-column:auto}.row{grid-template-columns:1fr 1fr}header{padding:24px 16px}}
-    @media(max-width:440px){.row{grid-template-columns:1fr}}
+    :root {
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #19344b; background: #f3f7fa;
+      --text: #19344b; --muted: #647d91; --line: #dce7ed; --paper: #fff;
+      --navy: #12324b; --blue: #1479a7; --blue-light: #e5f3fa;
+      --green: #167a6a; --red: #b04b4b; --shadow: 0 14px 38px rgba(28,61,82,.06);
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    body { margin: 0; min-width: 320px; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: progress; opacity: .6; }
+    button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, a:focus-visible {
+      outline: 3px solid #64b5e1; outline-offset: 3px;
+    }
+    .shell { max-width: 1240px; margin: 0 auto; padding: 0 24px; }
+    .topbar { background: #fff; border-bottom: 1px solid var(--line); }
+    .topbar-inner { min-height: 77px; display: flex; gap: 20px; justify-content: space-between; align-items: center; }
+    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--text); }
+    .mark { display: grid; place-items: center; width: 43px; height: 43px; border-radius: 13px; background: #e7f5fb; color: #087ba6; font-weight: 850; font-size: 24px; }
+    .brand strong { display: block; font-size: 19px; letter-spacing: -.5px; }
+    .brand small { color: var(--muted); font-size: 11px; letter-spacing: .13em; font-weight: 750; }
+    .top-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .api-control { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
+    .api-control select { width: 91px; border: 1px solid var(--line); padding: 8px; border-radius: 9px; color: var(--text); background: #fff; }
+    .connection { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; color: var(--muted); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #abbcca; }
+    .connection.ok .dot { background: #21a585; box-shadow: 0 0 0 3px #d3f2e8; }
+    .connection.error .dot { background: #d66c60; box-shadow: 0 0 0 3px #fae6e3; }
+    .hero-intro { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding: 35px 0 22px; }
+    .eyebrow { margin: 0 0 9px; font-size: 11px; font-weight: 800; letter-spacing: .14em; color: #0b7caa; text-transform: uppercase; }
+    h1 { margin: 0; font-size: clamp(27px, 3.9vw, 39px); line-height: 1.15; letter-spacing: -.045em; }
+    .subtitle { color: var(--muted); margin: 10px 0 0; line-height: 1.6; font-size: 14px; }
+    .historical { align-self: start; border: 1px solid #c9dfec; background: #eaf5fb; color: #296b8e; border-radius: 100px; padding: 9px 13px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .dashboard { display: grid; grid-template-columns: minmax(0, 1.52fr) minmax(310px, .9fr); gap: 18px; }
+    .card { min-width: 0; background: var(--paper); border: 1px solid var(--line); border-radius: 18px; padding: 22px; box-shadow: var(--shadow); }
+    .wide { grid-column: 1 / -1; }
+    .forecast-hero { background: linear-gradient(122deg, #103e5a 0%, #176d8e 65%, #2691ac 100%); color: #fff; border: 0; position: relative; overflow: hidden; min-height: 260px; }
+    .forecast-hero::after { content: ""; position: absolute; width: 300px; height: 300px; border-radius: 50%; border: 46px solid rgba(255,255,255,.05); right: -120px; top: -170px; pointer-events: none; }
+    .hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; position: relative; z-index: 1; }
+    .hero-label { color: #b7e3f0; margin: 0 0 7px; font-size: 13px; }
+    .hero-location { margin: 0; font-size: 25px; font-weight: 800; letter-spacing: -.6px; }
+    .hero-pill { border: 1px solid #79b9c9; color: #d9f5fc; font-size: 11px; font-weight: 800; border-radius: 18px; padding: 7px 11px; white-space: nowrap; }
+    .current-value { display: flex; gap: 12px; align-items: baseline; margin-top: 18px; }
+    .current-value strong { font-size: clamp(49px, 6vw, 76px); letter-spacing: -.065em; font-weight: 750; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .current-value span { color: #d6eff5; font-size: 16px; }
+    .hero-meta { color: #d6eff5; font-size: 13px; line-height: 1.6; margin-top: 7px; }
+    .hero-bottom { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #ffffff40; gap: 18px; margin-top: 21px; padding-top: 16px; }
+    .hero-bottom small { display: block; font-size: 11px; color: #b5e0ef; margin-bottom: 3px; }
+    .hero-bottom strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+    .side-panel h2, .card h2 { font-size: 18px; margin: 0; letter-spacing: -.35px; }
+    .card-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; margin-bottom: 17px; }
+    .card-heading p { font-size: 13px; color: var(--muted); margin: 6px 0 0; line-height: 1.5; }
+    .next-time { padding: 17px; background: #f1f8fc; border: 1px solid #dbebf5; border-radius: 13px; }
+    .micro-label { display: block; font-size: 11px; color: var(--muted); font-weight: 750; text-transform: uppercase; letter-spacing: .07em; }
+    .next-time strong { display: block; font-size: 17px; margin-top: 8px; font-variant-numeric: tabular-nums; }
+    .note { font-size: 12px; line-height: 1.6; color: var(--muted); margin: 12px 0 0; }
+    .primary, .secondary { border: 0; padding: 11px 14px; border-radius: 10px; font-size: 13px; font-weight: 750; transition: background .12s, transform .12s; }
+    .primary { background: #137fa9; color: #fff; }
+    .primary:hover { background: #106586; }
+    .secondary { background: #eef4f8; color: #24617d; }
+    .secondary:hover { background: #e2eef4; }
+    .full { width: 100%; }
+    .button-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    .button-row > button { flex: 1; }
+    .section-title { display: flex; align-items: center; gap: 10px; }
+    .section-title .small-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; background: #eaf5fa; color: #1b7797; font-size: 17px; }
+    .chart-holder { width: 100%; overflow-x: auto; }
+    .chart-holder svg { display: block; width: 100%; min-width: 450px; height: auto; }
+    .chart-placeholder { min-height: 265px; display: grid; place-items: center; text-align: center; background: linear-gradient(#fafdff,#f4f9fc); border: 1px dashed #d8e6ef; border-radius: 13px; padding: 20px; }
+    .chart-placeholder strong { font-size: 15px; }
+    .chart-placeholder p { margin: 8px auto 0; color: var(--muted); font-size: 13px; max-width: 420px; line-height: 1.6; }
+    .time-highlights { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; margin-top: 11px; }
+    .hour-box { padding: 12px 13px; background: #f6f9fb; border: 1px solid #e4edf2; border-radius: 12px; }
+    .hour-box small { display: block; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+    .hour-box strong { font-size: 20px; font-variant-numeric: tabular-nums; }
+    .hour-box span { font-size: 10px; color: var(--muted); margin-left: 3px; }
+    .blocks { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 11px; }
+    .block { border: 1px solid #dfebf1; border-radius: 13px; padding: 14px; background: #fbfdfe; }
+    .block p { margin: 0 0 10px; color: #47718a; font-size: 12px; font-weight: 800; }
+    .block strong { font-size: 23px; font-weight: 780; font-variant-numeric: tabular-nums; }
+    .block small { display: block; color: var(--muted); font-size: 11px; line-height: 1.45; margin-top: 7px; }
+    .small-muted { font-size: 11px; color: var(--muted); line-height: 1.5; }
+    .metric-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; }
+    .metric { background: #f4f8fb; padding: 14px; border-radius: 12px; min-width: 0; }
+    .metric small { display: block; color: var(--muted); font-size: 11px; }
+    .metric strong { display: block; font-size: clamp(20px,2.4vw,27px); font-variant-numeric: tabular-nums; margin-top: 5px; }
+    .metric span { font-size: 11px; color: var(--muted); }
+    .metric-rows { margin-top: 13px; }
+    .metric-row { display: flex; align-items: center; gap: 10px; margin: 9px 0; font-size: 12px; }
+    .metric-row span:first-child { min-width: 77px; font-weight: 700; }
+    .bar-bg { height: 7px; flex: 1; background: #edf3f6; border-radius: 50px; overflow: hidden; }
+    .bar-bg i { height: 100%; display: block; background: linear-gradient(90deg,#46b8d8,#1478a4); border-radius: 50px; }
+    .metric-row strong { font-weight: 720; min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; }
+    .split-heading { font-size: 12px; font-weight: 750; color: var(--text); margin: 18px 0 9px; }
+    .tools-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 18px; margin-top: 18px; }
+    .table-scroll { overflow: auto; max-height: 330px; border: 1px solid #e5edf2; border-radius: 11px; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+    th,td { padding: 11px 13px; border-bottom: 1px solid #e9f0f4; vertical-align: middle; white-space: nowrap; }
+    th { position: sticky; top: 0; background: #f4f8fb; color: #48677c; font-weight: 800; }
+    tr:last-child td { border-bottom: 0; }
+    .linkbtn { border: 0; padding: 5px 7px; background: none; color: #0d739d; font-size: 12px; font-weight: 750; }
+    .linkbtn:hover { text-decoration: underline; }
+    details { border: 1px solid #e2ebf1; border-radius: 12px; overflow: hidden; }
+    summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: 14px 15px; font-size: 13px; font-weight: 750; color: #24627f; }
+    summary::-webkit-details-marker { display: none; }
+    summary::after { content: "+"; font-size: 20px; line-height: 1; }
+    details[open] > summary::after { content: "−"; }
+    .details-body { padding: 0 15px 15px; }
+    .form-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; }
+    label { display: block; font-size: 12px; color: #415e72; font-weight: 720; }
+    input:not([type=file]), input[type=file] { display: block; width: 100%; margin-top: 6px; padding: 10px; border: 1px solid #cbdae3; border-radius: 9px; background: #fff; color: var(--text); min-width: 0; }
+    input[type=file] { font-size: 12px; padding: 9px; }
+    .form-submit { margin-top: 14px; }
+    .status { min-height: 18px; margin: 10px 0 0; font-size: 12px; color: #396a81; line-height: 1.6; white-space: pre-line; }
+    .status.error { color: var(--red); }
+    .status.ok { color: var(--green); }
+    .status.warning { color: #9d661a; }
+    .tool-desc { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 0 0 14px; }
+    code { padding: 2px 5px; background: #f1f5f8; border-radius: 4px; font-size: .94em; }
+    footer { text-align: center; padding: 34px 24px 44px; color: var(--muted); font-size: 12px; }
+    .footer-links { margin-top: 7px; }
+    .footer-links a { color: #18729a; }
+    @media (max-width: 920px) {
+      .dashboard { grid-template-columns: minmax(0,1fr); }
+      .tools-grid { grid-template-columns: 1fr; }
+      .hero-intro { align-items: start; }
+    }
+    @media (max-width: 600px) {
+      .shell { padding: 0 15px; }
+      .topbar-inner { flex-direction: column; align-items: start; padding-top: 14px; padding-bottom: 14px; gap: 10px; }
+      .hero-intro { flex-direction: column; padding-top: 24px; }
+      .historical { align-self: flex-start; }
+      .card { padding: 17px; border-radius: 15px; }
+      .blocks { grid-template-columns: 1fr 1fr; }
+      .time-highlights { grid-template-columns: 1fr 1fr; }
+      .form-grid { grid-template-columns: 1fr 1fr; }
+      .hero-bottom { gap: 10px; }
+    }
+    @media (max-width: 410px) { .form-grid { grid-template-columns: 1fr; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
   </style>
 </head>
 <body>
-<header><h1>Wanliu · PM2.5</h1><p>Predicción de las próximas 24 horas · Beijing, China · Datos históricos de demostración</p></header>
-<main>
-  <section class="card wide">
-    <div class="actions"><button class="secondary" id="btnState">Comprobar API y siguiente hora</button><span id="connection">Sin comprobar conexión</span></div>
-    <p class="helper">La siguiente observación debe continuar exactamente una hora después del último registro almacenado. No se trata de un pronóstico del aire actual de 2026.</p>
-  </section>
-  <section class="card wide">
-    <h2>1 · Ingresar una observación y predecir</h2>
-    <form id="predictForm">
-      <div class="row">
-        <label>Fecha y hora (Beijing)<input type="datetime-local" step="3600" id="observed_at" required></label>
-        <label>PM2.5 (µg/m³)<input type="number" name="pm25" value="75" min="0" step="any" required></label>
-        <label>PM10<input type="number" name="pm10" value="100" min="0" step="any"></label>
-        <label>SO2<input type="number" name="so2" value="10" min="0" step="any"></label>
-        <label>NO2<input type="number" name="no2" value="35" min="0" step="any"></label>
-        <label>CO<input type="number" name="co" value="600" min="0" step="any"></label>
-        <label>O3<input type="number" name="o3" value="45" min="0" step="any"></label>
-        <label>Temperatura (°C)<input type="number" name="temp" value="8" step="any"></label>
-        <label>Presión (hPa)<input type="number" name="pres" value="1015" min="1" step="any"></label>
-        <label>Punto de rocío (°C)<input type="number" name="dewp" value="-5" step="any"></label>
-        <label>Lluvia (mm)<input type="number" name="rain" value="0" min="0" step="any"></label>
-        <label>Velocidad del viento (m/s)<input type="number" name="wspm" value="2" min="0" step="any"></label>
-        <label>Dirección del viento<input name="wd" value="NW" placeholder="NW, N, SE..."></label>
+  <div class="topbar">
+    <div class="shell topbar-inner">
+      <a href="#inicio" class="brand" aria-label="Ir al inicio">
+        <span class="mark" aria-hidden="true">≈</span>
+        <span><strong>AirScope <span style="color:#1786ad">PM₂.₅</span></strong><small>ESTACIÓN WANLIU</small></span>
+      </a>
+      <div class="top-actions">
+        <label class="api-control" for="apiPort">API local
+          <select id="apiPort" aria-label="Puerto de API">
+            <option value="8000">:8000</option>
+            <option value="8001">:8001</option>
+          </select>
+        </label>
+        <div id="connection" class="connection" aria-live="polite"><span class="dot"></span><span id="connectionText">Comprobando...</span></div>
       </div>
-      <p class="helper">Los valores numéricos precargados son ficticios para probar la interfaz; reemplázalos por los de tu ejemplo.</p>
-      <button type="submit">Guardar medición y pronosticar 24 horas</button>
-    </form>
-    <p id="predictStatus" class="helper"></p>
-    <div id="predictionTable" class="scroll"></div>
-  </section>
-  <section class="card">
-    <h2>2 · Historial de predicciones</h2>
-    <button id="btnHistory">Consultar historial</button>
-    <p class="helper">Cada registro incluye las entradas enviadas y los 24 valores pronosticados.</p>
-    <div class="scroll" id="historyTable"></div>
-  </section>
-  <section class="card">
-    <h2>3 · Métricas del modelo</h2>
-    <button id="btnMetrics">Consultar métricas</button>
-    <pre id="metricsResult">Sin consultar</pre>
-  </section>
-  <section class="card">
-    <h2>4 · Subir CSV de observaciones</h2>
-    <p class="helper">El archivo debe tener <code>observed_at</code> y <code>pm25</code>. Opcionalmente: pm10, so2, no2, co, o3, temp, pres, dewp, rain, wspm, wd. Fechas consecutivas en hora local de Beijing.</p>
-    <form id="uploadForm"><label>Archivo CSV<input type="file" id="csvFile" accept=".csv,text/csv" required></label><button type="submit">Subir observaciones</button></form>
-    <pre id="uploadResult">Sin cargar</pre>
-  </section>
-  <section class="card">
-    <h2>5 · Reentrenar</h2>
-    <p class="helper">Entrena una nueva versión con los datos registrados, la compara en un período de validación y solo la publica si mejora el MAE. Puede tardar en ejecutarse.</p>
-    <button id="btnRetrain">Ejecutar reentrenamiento</button>
-    <pre id="retrainResult">Sin ejecutar</pre>
-  </section>
-</main>
-<footer>Proyecto académico · CRISP-ML(Q) · Wanliu (Beijing)</footer>
-<script>
-const API = 'http://127.0.0.1:8000';
-async function api(path, options) {
-  const response = await fetch(API + path, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
-  return data;
-}
-function pretty(data) { return JSON.stringify(data, null, 2); }
-function renderForecast(data) {
-  let table = document.createElement('table');
-  table.innerHTML = '<thead><tr><th>Hora futura</th><th>PM2.5 previsto (µg/m³)</th></tr></thead>';
-  const body = document.createElement('tbody');
-  for (const p of data) {
-    const tr = document.createElement('tr');
-    for (const value of [p.observed_at, p.pm25_predicho]) {
-      const td = document.createElement('td'); td.textContent = value; tr.appendChild(td);
+    </div>
+  </div>
+  <main class="shell" id="inicio">
+    <div class="hero-intro">
+      <div>
+        <p class="eyebrow">PANEL DE CALIDAD DEL AIRE · CHINA</p>
+        <h1>Tu pronóstico de PM₂.₅, hora a hora.</h1>
+        <p class="subtitle">Una vista clara de las próximas 24 horas estimadas a partir de la última medición de Wanliu.</p>
+      </div>
+      <span class="historical">● Simulación histórica · 2017</span>
+    </div>
+    <div class="dashboard">
+      <section class="card forecast-hero" aria-label="Resumen de la última medición">
+        <div class="hero-top">
+          <div><p class="hero-label">Última medición registrada</p><p class="hero-location">Wanliu · Beijing</p></div>
+          <span class="hero-pill">PM₂.₅ · µg/m³</span>
+        </div>
+        <div class="current-value"><strong id="currentValue">—</strong><span>µg/m³</span></div>
+        <div class="hero-meta" id="currentDate">Consulta el historial o registra una nueva medición para ver el pronóstico.</div>
+        <div class="hero-bottom">
+          <div><small>Mínimo previsto · 24 h</small><strong id="forecastMin">—</strong></div>
+          <div><small>Máximo previsto · 24 h</small><strong id="forecastMax">—</strong></div>
+        </div>
+      </section>
+      <section class="card side-panel">
+        <div class="card-heading"><div><h2>Estado de la estación</h2><p>Continuidad de la serie histórica.</p></div></div>
+        <div class="next-time"><span class="micro-label">Próxima hora que puede registrarse</span><strong id="nextExpected">Consultando...</strong></div>
+        <p class="note">Las horas corresponden a Beijing (UTC+8), no a la fecha actual. Los valores precargados para pruebas son ficticios.</p>
+        <div class="button-row">
+          <button class="secondary" id="btnState" type="button">Actualizar estado</button>
+          <button class="primary" id="openMeasure" type="button">Nueva medición</button>
+        </div>
+      </section>
+      <section class="card wide" id="forecastSection">
+        <div class="card-heading">
+          <div class="section-title"><span class="small-icon" aria-hidden="true">⌁</span><div><h2>Pronóstico de las próximas 24 horas</h2><p id="forecastSource">Los datos se actualizan al generar o consultar un pronóstico.</p></div></div>
+          <button class="secondary" id="btnHistory" type="button">Ver historial</button>
+        </div>
+        <div id="chartEmpty" class="chart-placeholder"><div><strong>Tu pronóstico aparecerá aquí</strong><p>Registra una medición o recupera una predicción anterior para visualizar la curva de PM₂.₅.</p></div></div>
+        <div id="chartSection" hidden>
+          <div class="chart-holder"><svg id="forecastSvg" viewBox="0 0 900 295" role="img" aria-label="Curva con 24 valores horarios pronosticados de PM2.5"></svg></div>
+          <p class="small-muted">El gráfico muestra estimaciones del modelo, no mediciones reales futuras. Puedes pasar el cursor por los puntos para ver cada valor.</p>
+          <div id="timeHighlights" class="time-highlights"></div>
+        </div>
+        <details style="margin-top:16px" id="forecastDetails">
+          <summary>Ver las 24 horas en una tabla</summary>
+          <div class="details-body"><div class="table-scroll" id="predictionTable"><p class="note">Aún no hay resultados.</p></div></div>
+        </details>
+        <p id="predictStatus" class="status" aria-live="polite"></p>
+      </section>
+      <section class="card wide">
+        <div class="card-heading"><div><h2>Vista por tramos de seis horas</h2><p>Concentración PM₂.₅ promedio prevista en cada período.</p></div></div>
+        <div class="blocks" id="forecastBlocks">
+          <div class="block"><p>+1 a +6 h</p><strong>—</strong><small>Sin pronóstico</small></div>
+          <div class="block"><p>+7 a +12 h</p><strong>—</strong><small>Sin pronóstico</small></div>
+          <div class="block"><p>+13 a +18 h</p><strong>—</strong><small>Sin pronóstico</small></div>
+          <div class="block"><p>+19 a +24 h</p><strong>—</strong><small>Sin pronóstico</small></div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-heading">
+          <div><h2>Rendimiento del modelo</h2><p id="metricContext">Métricas históricas, no porcentajes de certeza.</p></div>
+          <button class="secondary" id="btnMetrics" type="button">Actualizar</button>
+        </div>
+        <div class="metric-grid">
+          <div class="metric"><small>MAE</small><strong id="metricMAE">—</strong><span>µg/m³</span></div>
+          <div class="metric"><small>RMSE</small><strong id="metricRMSE">—</strong><span>µg/m³</span></div>
+          <div class="metric"><small>R²</small><strong id="metricR2">—</strong><span>Coeficiente</span></div>
+        </div>
+        <div class="split-heading">MAE histórico por horizonte <span class="small-muted">(si está disponible)</span></div>
+        <div class="metric-rows" id="metricBlocks"><p class="note">Cargando métricas...</p></div>
+        <p class="note" id="metricVersion">Versión del modelo: —</p>
+      </section>
+      <section class="card">
+        <div class="card-heading"><div><h2>Historial de predicciones</h2><p>Consulta predicciones almacenadas, sin volver a ejecutarlas.</p></div></div>
+        <div id="historyTable" class="table-scroll"><p class="note" style="padding:12px">Consultando historial...</p></div>
+        <p id="historyStatus" class="status" aria-live="polite"></p>
+      </section>
+    </div>
+    <div class="tools-grid">
+      <section class="card" id="measurementPanel">
+        <div class="card-heading"><div><h2>Registrar una medición</h2><p>Una hora de datos ambientales para generar 24 pronósticos.</p></div></div>
+        <details id="measureDetails" open>
+          <summary>Datos ambientales de Wanliu</summary>
+          <div class="details-body">
+            <form id="predictForm">
+              <div class="form-grid">
+                <label>Fecha y hora · Beijing<input type="datetime-local" id="observed_at" step="3600" required></label>
+                <label>PM2.5 (µg/m³)<input type="number" name="pm25" value="75" min="0" step="any" required></label>
+                <label>PM10<input type="number" name="pm10" value="100" min="0" step="any"></label>
+                <label>SO₂<input type="number" name="so2" value="10" min="0" step="any"></label>
+                <label>NO₂<input type="number" name="no2" value="35" min="0" step="any"></label>
+                <label>CO<input type="number" name="co" value="600" min="0" step="any"></label>
+                <label>O₃<input type="number" name="o3" value="45" min="0" step="any"></label>
+                <label>Temperatura (°C)<input type="number" name="temp" value="8" step="any"></label>
+                <label>Presión (hPa)<input type="number" name="pres" value="1015" min="1" step="any"></label>
+                <label>Punto de rocío (°C)<input type="number" name="dewp" value="-5" step="any"></label>
+                <label>Lluvia (mm)<input type="number" name="rain" value="0" min="0" step="any"></label>
+                <label>Viento (m/s)<input type="number" name="wspm" value="2" min="0" step="any"></label>
+                <label>Dirección del viento<input name="wd" value="NW" placeholder="NW, N, SE..."></label>
+              </div>
+              <p class="note">Los valores precargados son ficticios. La fecha debe coincidir con la indicada en «Estado de la estación».</p>
+              <button class="primary full form-submit" type="submit">Guardar y pronosticar 24 horas</button>
+            </form>
+          </div>
+        </details>
+      </section>
+      <section class="card">
+        <div class="card-heading"><div><h2>Incorporar datos y reentrenar</h2><p>Operaciones separadas; cargar CSV no reentrena automáticamente.</p></div></div>
+        <p class="tool-desc"><strong>1. Cargar observaciones</strong><br>CSV UTF-8 con <code>observed_at</code>, <code>pm25</code> y opcionalmente otras variables. Las horas deben ser consecutivas.</p>
+        <form id="uploadForm"><label>Archivo CSV<input type="file" id="csvFile" accept=".csv,text/csv" required></label><button class="secondary full form-submit" type="submit">Subir CSV</button></form>
+        <p class="status" id="uploadResult" aria-live="polite"></p>
+        <hr style="border:0;border-top:1px solid #e5edf2;margin:24px 0">
+        <p class="tool-desc"><strong>2. Solicitar reentrenamiento</strong><br>Solo procede si hay suficientes mediciones nuevas y válidas. La evaluación no equivale a certeza por pronóstico.</p>
+        <button class="secondary full" id="btnRetrain" type="button">Evaluar nuevo entrenamiento</button>
+        <p class="status" id="retrainResult" aria-live="polite"></p>
+      </section>
+    </div>
+  </main>
+  <footer>Prototipo académico · CRISP-ML(Q) · Wanliu, Beijing · Datos históricos 2013–2017
+    <div class="footer-links"><a id="swaggerLink" href="http://127.0.0.1:8000/docs" target="_blank" rel="noopener">Documentación Swagger</a></div>
+  </footer>
+  <script>
+    'use strict';
+    const $ = selector => document.querySelector(selector);
+    const el = (tag, text, className) => {
+      const node = document.createElement(tag);
+      if (text !== undefined) node.textContent = String(text);
+      if (className) node.className = className;
+      return node;
+    };
+    const fmt = (value, decimals = 1) => value === null || value === undefined || !Number.isFinite(Number(value))
+      ? '—' : Number(value).toLocaleString('es-ES', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+    const hourText = iso => iso ? String(iso).replace('T', ' ').slice(0, 16) : '—';
+    const shortTime = iso => iso ? String(iso).slice(11,16) : '—';
+    const storedPort = (() => { try { return localStorage.getItem('wanliu_api_port'); } catch { return null; } })();
+    const urlPort = new URLSearchParams(location.search).get('api');
+    $('#apiPort').value = ['8000','8001'].includes(urlPort) ? urlPort : (['8000','8001'].includes(storedPort) ? storedPort : '8000');
+    const baseApi = () => 'http://127.0.0.1:' + $('#apiPort').value;
+    const setStatus = (selector, text, kind = '') => { const node = $(selector); node.textContent = text; node.className = 'status' + (kind ? ' ' + kind : ''); };
+    async function api(path, options = {}) {
+      let response;
+      try { response = await fetch(baseApi() + path, options); }
+      catch { throw new Error('No se pudo conectar con la API. Verifica el puerto y que FastAPI esté ejecutándose.'); }
+      let data;
+      try { data = await response.json(); } catch { throw new Error('La API devolvió una respuesta no válida.'); }
+      if (!response.ok) {
+        const detail = data.detail;
+        if (Array.isArray(detail)) throw new Error(detail.map(x => x.msg || JSON.stringify(x)).join('; '));
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail || data));
+      }
+      return data;
     }
-    body.appendChild(tr);
-  }
-  table.appendChild(body); return table;
-}
-async function state() {
-  try {
-    const response = await api('/state');
-    document.querySelector('#connection').textContent = 'API y PostgreSQL conectados. Siguiente hora: ' + response.next_expected_observed_at;
-    document.querySelector('#observed_at').value = response.next_expected_observed_at.slice(0, 16);
-  } catch (error) { document.querySelector('#connection').textContent = 'Error: ' + error.message; }
-}
-document.querySelector('#btnState').addEventListener('click', state);
-document.querySelector('#predictForm').addEventListener('submit', async event => {
-  event.preventDefault(); const button = event.target.querySelector('button'); button.disabled = true;
-  const el = document.querySelector('#predictStatus'); el.textContent = 'Generando 24 pronósticos...';
-  try {
-    const form = new FormData(event.target);
-    const payload = { observed_at: document.querySelector('#observed_at').value + ':00' };
-    for (const key of ['pm25','pm10','so2','no2','co','o3','temp','pres','dewp','rain','wspm']) {
-      const value = form.get(key); payload[key] = value === '' ? null : Number(value);
+    function drawChart(predictions) {
+      const svg = $('#forecastSvg');
+      svg.replaceChildren();
+      const ns = 'http://www.w3.org/2000/svg';
+      const add = (tag, attrs, parent=svg) => {
+        const node = document.createElementNS(ns, tag);
+        for (const [key,value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+        parent.appendChild(node); return node;
+      };
+      const vals = predictions.map(p => Number(p.pm25_predicho));
+      if (vals.length !== 24 || vals.some(v => !Number.isFinite(v))) return;
+      const W=900, L=53, R=16, TOP=18, BOT=250, plotW=W-L-R, plotH=BOT-TOP;
+      const min=Math.min(...vals), max=Math.max(...vals);
+      const low=Math.max(0,Math.floor((min-Math.max(8,(max-min)*.15))/10)*10);
+      const high=Math.ceil((max+Math.max(8,(max-min)*.15))/10)*10 || 10;
+      const y=v => BOT - ((v-low)/(high-low))*plotH;
+      const x=i => L + i*(plotW/23);
+      const points=vals.map((v,i)=>[x(i),y(v)]);
+      const defs=add('defs',{});
+      const gradient=add('linearGradient',{id:'forecastFill',x1:'0',y1:'0',x2:'0',y2:'1'},defs);
+      add('stop',{offset:'0%', 'stop-color':'#47b7d4','stop-opacity':'0.3'},gradient);
+      add('stop',{offset:'100%', 'stop-color':'#47b7d4','stop-opacity':'0.01'},gradient);
+      for(let i=0;i<=4;i++) {
+        const yy=TOP+(plotH/4)*i;
+        add('line',{x1:L,y1:yy,x2:W-R,y2:yy,stroke:'#e3edf3','stroke-width':1});
+        const text=add('text',{x:L-10,y:yy+4,'text-anchor':'end',fill:'#718a9e','font-size':12}); text.textContent=fmt(high-(high-low)*i/4,0);
+      }
+      const area='M '+points[0][0]+' '+BOT+' L '+points.map(p=>p.join(' ')).join(' L ')+' L '+points[23][0]+' '+BOT+' Z';
+      add('path',{d:area,fill:'url(#forecastFill)'});
+      add('path',{d:'M '+points.map(p=>p.join(' ')).join(' L '),fill:'none',stroke:'#1689b0','stroke-width':3.5,'stroke-linecap':'round','stroke-linejoin':'round'});
+      [0,5,11,17,23].forEach(i=>{
+        const text=add('text',{x:x(i),y:280,fill:'#718a9e','font-size':12,'text-anchor':i===0?'start':i===23?'end':'middle'});
+        text.textContent='+'+(i+1)+' h';
+      });
+      points.forEach((p,i)=>{
+        const circle=add('circle',{cx:p[0],cy:p[1],r:4.7,fill:'#fff',stroke:'#1282aa','stroke-width':2,'tabindex':0,'aria-label':`+${i+1} horas, ${fmt(vals[i])} microgramos por metro cúbico`});
+        const tip=add('title',{},circle);
+        tip.textContent=`+${i+1} h · ${hourText(predictions[i].observed_at)} · ${fmt(vals[i])} µg/m³`;
+      });
     }
-    payload.wd = form.get('wd') || 'Desconocido';
-    const result = await api('/predict', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    el.textContent = 'Predicción #' + result.id + ' · Modelo: ' + result.model_version;
-    const container = document.querySelector('#predictionTable'); container.replaceChildren(renderForecast(result.predictions));
-    await state();
-  } catch(error) {el.textContent = 'Error: ' + error.message;} finally {button.disabled=false;}
-});
-document.querySelector('#btnHistory').addEventListener('click', async () => {
-  const target = document.querySelector('#historyTable'); target.textContent = 'Consultando...';
-  try {
-    const rows = await api('/predictions?limit=20');
-    if (!rows.length) {target.textContent = 'Aún no hay predicciones.';return;}
-    const pre = document.createElement('pre'); pre.textContent = pretty(rows); target.replaceChildren(pre);
-  } catch(error) {target.textContent = error.message;}
-});
-document.querySelector('#btnMetrics').addEventListener('click', async () => {
-  const target = document.querySelector('#metricsResult');target.textContent = 'Consultando...';
-  try {target.textContent = pretty(await api('/metrics'));} catch(error) {target.textContent=error.message;}
-});
-document.querySelector('#uploadForm').addEventListener('submit',async event => {
-  event.preventDefault(); const target=document.querySelector('#uploadResult');target.textContent='Subiendo...';
-  const form = new FormData(); form.append('file', document.querySelector('#csvFile').files[0]);
-  try {target.textContent=pretty(await api('/training-data',{method:'POST',body:form}));await state();}
-  catch(error){target.textContent=error.message;}
-});
-document.querySelector('#btnRetrain').addEventListener('click',async () => {
-  if (!confirm('¿Ejecutar reentrenamiento? Puede consumir varios minutos.')) return;
-  const target=document.querySelector('#retrainResult');target.textContent='Reentrenando...';
-  const button=document.querySelector('#btnRetrain');button.disabled=true;
-  try {target.textContent=pretty(await api('/retrain',{method:'POST'}));}
-  catch(error){target.textContent=error.message;}finally{button.disabled=false;}
-});
-state();
-</script>
+    function renderForecast(predictions, context) {
+      if (!Array.isArray(predictions) || predictions.length !== 24) {
+        setStatus('#predictStatus','La respuesta no contiene los 24 horizontes esperados.','error'); return;
+      }
+      const ordered=[...predictions].sort((a,b)=>Number(a.horizonte)-Number(b.horizonte));
+      const values=ordered.map(p=>Number(p.pm25_predicho));
+      if (values.some(v=>!Number.isFinite(v))) {
+        setStatus('#predictStatus','El pronóstico contiene valores no numéricos.','error'); return;
+      }
+      $('#chartEmpty').hidden=true;
+      $('#chartSection').hidden=false;
+      $('#currentValue').textContent=fmt(context.input?.pm25 || 0,1);
+      $('#currentDate').textContent='Medición de origen: '+hourText(context.observed_at)+' (hora local de Beijing)';
+      $('#forecastMin').textContent=fmt(Math.min(...values))+' µg/m³';
+      $('#forecastMax').textContent=fmt(Math.max(...values))+' µg/m³';
+      $('#forecastSource').textContent=(context.historic?'Historial guardado':'Nuevo pronóstico')+' · Modelo '+(context.version || 'no indicado');
+      drawChart(ordered);
+      const highlights=$('#timeHighlights'); highlights.replaceChildren();
+      [0,5,11,23].forEach(i=>{
+        const box=el('div',undefined,'hour-box');
+        box.append(el('small','+'+(i+1)+' h · '+shortTime(ordered[i].observed_at)),el('strong',fmt(values[i])),el('span','µg/m³'));
+        highlights.appendChild(box);
+      });
+      const blocks=$('#forecastBlocks');blocks.replaceChildren();
+      for(let i=0;i<4;i++) {
+        const slice=values.slice(i*6,(i+1)*6);
+        const avg=slice.reduce((a,b)=>a+b,0)/slice.length;
+        const box=el('div',undefined,'block');
+        box.append(el('p',`+${i*6+1} a +${(i+1)*6} h`),el('strong',fmt(avg)),el('small','µg/m³ de promedio pronosticado'));
+        blocks.appendChild(box);
+      }
+      const table=el('table');
+      const head=el('thead');const tr=el('tr');
+      for(const h of ['Horizonte','Hora de Beijing','PM₂.₅ estimado (µg/m³)']) tr.appendChild(el('th',h));
+      head.appendChild(tr);table.appendChild(head);
+      const tbody=el('tbody');
+      ordered.forEach(p=>{
+        const tr=el('tr');
+        for(const v of ['+'+p.horizonte+' h',hourText(p.observed_at),fmt(p.pm25_predicho)]) tr.appendChild(el('td',v));
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);$('#predictionTable').replaceChildren(table);
+    }
+    function renderMetrics(data) {
+      const hasTest=Boolean(data.test_initial && data.test_initial.MAE != null);
+      const selected=hasTest ? data.test_initial : data.validation || {};
+      const basis=hasTest?'Conjunto de prueba del modelo original':'Evaluación disponible de la versión activa';
+      $('#metricMAE').textContent=fmt(selected.MAE,2);
+      $('#metricRMSE').textContent=fmt(selected.RMSE,2);
+      $('#metricR2').textContent=fmt(selected.R2,3);
+      $('#metricContext').textContent=basis+' · No son porcentajes de certeza.';
+      $('#metricVersion').textContent='Modelo activo: '+(data.version || '—');
+      const target=$('#metricBlocks'); target.replaceChildren();
+      const blocks=hasTest && Array.isArray(data.test_initial_6h) && data.test_initial_6h.length===4 ? data.test_initial_6h : null;
+      if (!blocks) {target.appendChild(el('p','No hay métricas por horizonte verificadas para esta versión.','note'));return;}
+      const maximum=Math.max(...blocks.map(x=>Number(x.MAE)||0),1);
+      blocks.forEach((block,i)=>{
+        const row=el('div',undefined,'metric-row');
+        row.appendChild(el('span',String(block.Bloque || `Tramo ${i+1}`)));
+        const bg=el('div',undefined,'bar-bg');const bar=el('i');
+        bar.style.width=Math.max(2,(Number(block.MAE)/maximum)*100)+'%';bg.appendChild(bar);row.appendChild(bg);
+        row.appendChild(el('strong',fmt(block.MAE,1)));
+        target.appendChild(row);
+      });
+    }
+    async function state() {
+      const connection=$('#connection');
+      try {
+        const d=await api('/state');
+        connection.className='connection ok';$('#connectionText').textContent='API y BD conectadas';
+        $('#nextExpected').textContent=hourText(d.next_expected_observed_at);
+        $('#observed_at').value=String(d.next_expected_observed_at).slice(0,16);
+        return d;
+      } catch(error) {
+        connection.className='connection error';$('#connectionText').textContent='Conexión pendiente';
+        $('#nextExpected').textContent='No disponible';
+        setStatus('#predictStatus',error.message,'error');
+      }
+    }
+    async function metrics() {
+      try { renderMetrics(await api('/metrics')); }
+      catch(error) { $('#metricContext').textContent='No se pudieron consultar las métricas: '+error.message; }
+    }
+    async function history({showLatest=false}={}) {
+      const target=$('#historyTable');
+      try {
+        const rows=await api('/predictions?limit=20');
+        target.replaceChildren();
+        if(!rows.length){target.append(el('p','Aún no hay pronósticos registrados.','note'));return;}
+        const table=el('table');const head=el('thead');const tr=el('tr');
+        ['Origen','PM₂.₅','Modelo',''].forEach(h=>tr.appendChild(el('th',h)));
+        head.appendChild(tr);table.appendChild(head);
+        const tbody=el('tbody');
+        rows.forEach(item=>{
+          const tr=el('tr');
+          tr.append(el('td',hourText(item.observed_at)),el('td',fmt(item.input?.pm25)),el('td',item.model_version||'—'));
+          const cell=el('td');const btn=el('button','Ver curva','linkbtn');btn.type='button';
+          btn.addEventListener('click',()=>{
+            renderForecast(item.predictions,{input:item.input,observed_at:item.observed_at,version:item.model_version,historic:true});
+            setStatus('#predictStatus','Visualizando el pronóstico #'+item.id+' recuperado de la base de datos.','ok');
+            $('#forecastSection').scrollIntoView({behavior:'smooth',block:'start'});
+          });
+          cell.appendChild(btn);tr.appendChild(cell);tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);target.appendChild(table);
+        if(showLatest && rows[0]) renderForecast(rows[0].predictions,{input:rows[0].input,observed_at:rows[0].observed_at,version:rows[0].model_version,historic:true});
+        setStatus('#historyStatus',rows.length+' registro(s) recuperado(s).','ok');
+      } catch(error) {target.replaceChildren(el('p',error.message,'note'));setStatus('#historyStatus',error.message,'error');}
+    }
+    $('#apiPort').addEventListener('change',async()=>{
+      try {localStorage.setItem('wanliu_api_port',$('#apiPort').value);}catch {}
+      $('#swaggerLink').href=baseApi()+'/docs';
+      await Promise.allSettled([state(),metrics(),history({showLatest:true})]);
+    });
+    $('#swaggerLink').href=baseApi()+'/docs';
+    $('#btnState').addEventListener('click',state);
+    $('#btnMetrics').addEventListener('click',metrics);
+    $('#btnHistory').addEventListener('click',()=>history({showLatest:false}));
+    $('#openMeasure').addEventListener('click',()=>{
+      $('#measureDetails').open=true;
+      $('#measurementPanel').scrollIntoView({behavior:'smooth',block:'start'});
+      $('#observed_at').focus();
+    });
+    $('#predictForm').addEventListener('submit',async event=>{
+      event.preventDefault();
+      const form=event.currentTarget;const btn=form.querySelector('button[type=submit]');
+      btn.disabled=true;setStatus('#predictStatus','Generando las 24 estimaciones...');
+      try {
+        const inputs=new FormData(form);
+        const payload={observed_at:$('#observed_at').value+':00'};
+        for(const key of ['pm25','pm10','so2','no2','co','o3','temp','pres','dewp','rain','wspm']) {
+          const value=inputs.get(key);payload[key]=value===''?null:Number(value);
+        }
+        payload.wd=inputs.get('wd')?.trim() || 'Desconocido';
+        const response=await api('/predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        renderForecast(response.predictions,{input:response.input,observed_at:response.observed_at,version:response.model_version,historic:false});
+        setStatus('#predictStatus',`Pronóstico #${response.id} generado y guardado. Versión: ${response.model_version}.`,'ok');
+        await Promise.allSettled([state(),history({showLatest:false})]);
+        $('#forecastSection').scrollIntoView({behavior:'smooth',block:'start'});
+      } catch(error) {setStatus('#predictStatus',error.message,'error');}
+      finally {btn.disabled=false;}
+    });
+    $('#uploadForm').addEventListener('submit',async event=>{
+      event.preventDefault();const btn=event.currentTarget.querySelector('button');btn.disabled=true;
+      const file=$('#csvFile').files[0];
+      if(!file){setStatus('#uploadResult','Selecciona un archivo CSV.','error');btn.disabled=false;return;}
+      setStatus('#uploadResult','Validando y cargando archivo...');
+      const form=new FormData();form.append('file',file);
+      try {
+        const result=await api('/training-data',{method:'POST',body:form});
+        setStatus('#uploadResult',`${result.inserted} observación(es) guardada(s). Período: ${hourText(result.first)} a ${hourText(result.last)}. No se generó un pronóstico ni se reentrenó automáticamente.`,'ok');
+        await state();
+      } catch(error) {setStatus('#uploadResult',error.message,'error');}
+      finally {btn.disabled=false;}
+    });
+    $('#btnRetrain').addEventListener('click',async()=>{
+      if(!confirm('¿Solicitar reentrenamiento? Debe utilizarse información nueva auténtica y validada.')) return;
+      const btn=$('#btnRetrain');btn.disabled=true;setStatus('#retrainResult','Evaluando datos y posible entrenamiento...');
+      try {
+        const result=await api('/retrain',{method:'POST'});
+        if(result.status==='insufficient_new_data')
+          setStatus('#retrainResult',`No se reentrenó. Hay ${result.new_rows} observaciones nuevas elegibles; se requieren ${result.required}.`,'warning');
+        else if(result.status==='promoted')
+          setStatus('#retrainResult',`Modelo actualizado. MAE candidato: ${fmt(result.candidate_validation?.MAE,2)}; MAE anterior: ${fmt(result.incumbent_validation?.MAE,2)}. Evaluación de reentrenamiento, no del test original.`,'ok');
+        else if(result.status==='not_promoted')
+          setStatus('#retrainResult',`Se conserva el modelo anterior. MAE candidato: ${fmt(result.candidate_validation?.MAE,2)}; MAE anterior: ${fmt(result.incumbent_validation?.MAE,2)}.`,'warning');
+        else setStatus('#retrainResult','Respuesta del servicio: '+JSON.stringify(result));
+        await metrics();
+      } catch(error) {setStatus('#retrainResult',error.message,'error');}
+      finally {btn.disabled=false;}
+    });
+    Promise.allSettled([state(),metrics(),history({showLatest:true})]);
+  </script>
 </body>
 </html>

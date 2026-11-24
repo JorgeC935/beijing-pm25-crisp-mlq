@@ -363,64 +363,198 @@ def build_retrain_matrix(data: pd.DataFrame, feature_columns):
     return pd.concat(parts, ignore_index=True)
 
 
+
 @app.post("/retrain")
 def retrain():
     with MODEL_LOCK:
         current = load_package()
+
         with connect() as conn:
             station_id = find_station(conn, lock=True)
+
             rows = conn.execute(
-                """SELECT observed_at, pm25, pm10, so2, no2, co, o3, temp, pres, dewp, rain, wd, wspm
-                FROM observations WHERE station_id = %s ORDER BY observed_at""", (station_id,)
+                """SELECT observed_at, pm25, pm10, so2, no2,
+                          co, o3, temp, pres, dewp, rain, wd, wspm
+                   FROM observations
+                   WHERE station_id = %s
+                   ORDER BY observed_at""",
+                (station_id,),
             ).fetchall()
+
             data = pd.DataFrame(rows)
+            data["observed_at"] = pd.to_datetime(
+                data["observed_at"]
+            )
+
+            # Excluir las nueve observaciones ficticias
+            # utilizadas durante nuestras pruebas.
+            demo = data["observed_at"].between(
+                pd.Timestamp("2017-03-01 00:00:00"),
+                pd.Timestamp("2017-03-01 08:00:00"),
+            )
+            data = data.loc[~demo].copy()
+
+            # El dataset original terminó el 28/02/2017.
+            # Exigir datos posteriores para evaluar un
+            # reentrenamiento con información nueva.
+            new_rows = data.loc[
+                data["observed_at"] >
+                pd.Timestamp("2017-02-28 23:00:00")
+            ].sort_values("observed_at")
+
+            if len(new_rows) < 168:
+                return {
+                    "status": "insufficient_new_data",
+                    "new_rows": len(new_rows),
+                    "required": 168,
+                    "note": (
+                        "No se reentrenó el modelo. Se necesitan "
+                        "al menos 168 mediciones horarias nuevas, "
+                        "consecutivas y auténticas. Las observaciones "
+                        "ficticias de demostración están excluidas."
+                    ),
+                }
+
+            if not new_rows["observed_at"].diff().dropna().eq(
+                pd.Timedelta(hours=1)
+            ).all():
+                raise HTTPException(
+                    409,
+                    "Las observaciones nuevas presentan horas discontinuas",
+                )
+
             cols = current["feature_columns"]
             samples = build_retrain_matrix(data, cols)
-            origins = data["observed_at"].sort_values().reset_index(drop=True)
-            cutoff = origins.iloc[int(len(origins) * 0.85)]
-            train = samples[samples["observed_at"] + pd.Timedelta(hours=24) < cutoff]
-            val = samples[samples["observed_at"] >= cutoff]
+
+            # Reservar las últimas 48 horas nuevas
+            # como período de evaluación.
+            cutoff = new_rows.iloc[-48]["observed_at"]
+
+            # Evitar que los objetivos futuros del
+            # entrenamiento alcancen el período validado.
+            train = samples.loc[
+                samples["observed_at"] +
+                pd.Timedelta(hours=24) < cutoff
+            ]
+
+            val = samples.loc[
+                samples["observed_at"] >= cutoff
+            ]
+
             if len(train) < 1000 or len(val) < 100:
-                raise HTTPException(409, "El período disponible es insuficiente para la división cronológica de entrenamiento y validación")
+                raise HTTPException(
+                    409,
+                    "No hay suficientes ejemplos para entrenar y validar",
+                )
+
+            # Entrenar candidato solo con el período permitido.
             candidate = clone(current["model"])
             candidate.fit(train[cols], train["target"])
-            candidate_pred = np.maximum(0, candidate.predict(val[cols]))
-            incumbent_pred = np.maximum(0, current["model"].predict(val[cols]))
-            candidate_mae = float(mean_absolute_error(val["target"], candidate_pred))
-            incumbent_mae = float(mean_absolute_error(val["target"], incumbent_pred))
-            candidate_rmse = float(np.sqrt(mean_squared_error(val["target"], candidate_pred)))
-            incumbent_rmse = float(np.sqrt(mean_squared_error(val["target"], incumbent_pred)))
+
+            candidate_pred = np.maximum(
+                0, candidate.predict(val[cols])
+            )
+            incumbent_pred = np.maximum(
+                0, current["model"].predict(val[cols])
+            )
+
+            candidate_mae = float(
+                mean_absolute_error(val["target"], candidate_pred)
+            )
+            incumbent_mae = float(
+                mean_absolute_error(val["target"], incumbent_pred)
+            )
+
+            candidate_rmse = float(
+                np.sqrt(mean_squared_error(
+                    val["target"], candidate_pred
+                ))
+            )
+            incumbent_rmse = float(
+                np.sqrt(mean_squared_error(
+                    val["target"], incumbent_pred
+                ))
+            )
+
             improved = candidate_mae < incumbent_mae
+
             if improved:
-                candidate.fit(samples[cols], samples["target"])
+                # IMPORTANTE: no entrenar nuevamente con
+                # los datos reservados para validación.
                 updated = dict(current)
                 updated["model"] = candidate
-                updated["version"] = "wanliu-retrain-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                updated["model_name"] = str(current.get("model_name", "HistGradientBoosting"))
-                updated["trained_at_utc"] = datetime.now(timezone.utc).isoformat()
-                updated["training_data_last_origin"] = str(samples["observed_at"].max())
+                updated["version"] = (
+                    "wanliu-retrain-" +
+                    datetime.now(timezone.utc).strftime(
+                        "%Y%m%dT%H%M%SZ"
+                    )
+                )
+                updated["trained_at_utc"] = (
+                    datetime.now(timezone.utc).isoformat()
+                )
+                updated["training_data_last_origin"] = str(
+                    train["observed_at"].max()
+                )
                 updated["retrain_evaluation"] = {
                     "candidate_validation_MAE": candidate_mae,
                     "candidate_validation_RMSE": candidate_rmse,
                     "incumbent_validation_MAE": incumbent_mae,
                     "incumbent_validation_RMSE": incumbent_rmse,
-                    "comparison": "Corte cronológico común; métricas del candidato antes de ajustar sobre todos los datos",
+                    "comparison": (
+                        "Evaluación cronológica con datos posteriores "
+                        "al período original; validación excluida "
+                        "del ajuste del candidato"
+                    ),
                 }
-                updated["validation_metrics"] = {"MAE": candidate_mae, "RMSE": candidate_rmse}
+                updated["validation_metrics"] = {
+                    "MAE": candidate_mae,
+                    "RMSE": candidate_rmse,
+                }
+
+                # No reutilizar métricas del test original
+                # como si fueran de la nueva versión.
                 updated["test_metrics"] = None
                 updated["test_metrics_6h"] = None
+
                 tmp = MODEL_UPDATED.with_suffix(".joblib.tmp")
-                MODEL_UPDATED.parent.mkdir(parents=True, exist_ok=True)
+                MODEL_UPDATED.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
                 joblib.dump(updated, tmp)
                 os.replace(tmp, MODEL_UPDATED)
+
             conn.execute(
                 """INSERT INTO retraining_runs
-                (promoted, candidate_mae, incumbent_mae, sample_count, validation_start)
-                VALUES (%s, %s, %s, %s, %s)""",
-                (improved, candidate_mae, incumbent_mae, len(samples), cutoff.to_pydatetime()),
+                   (promoted, candidate_mae, incumbent_mae,
+                    sample_count, validation_start)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                (
+                    improved,
+                    candidate_mae,
+                    incumbent_mae,
+                    len(samples),
+                    cutoff.to_pydatetime(),
+                ),
             )
-            return {"status": "promoted" if improved else "not_promoted",
-                    "candidate_validation": {"MAE": candidate_mae, "RMSE": candidate_rmse},
-                    "incumbent_validation": {"MAE": incumbent_mae, "RMSE": incumbent_rmse},
-                    "sample_count": len(samples),
-                    "note": "Si mejora, el modelo se reajusta con todos los ejemplos y se guarda en models/wanliu_pm25_latest.joblib."}
+
+            return {
+                "status": (
+                    "promoted" if improved else "not_promoted"
+                ),
+                "candidate_validation": {
+                    "MAE": candidate_mae,
+                    "RMSE": candidate_rmse,
+                },
+                "incumbent_validation": {
+                    "MAE": incumbent_mae,
+                    "RMSE": incumbent_rmse,
+                },
+                "sample_count": len(samples),
+                "validation_start": cutoff.isoformat(),
+                "note": (
+                    "La comparación usa datos no incluidos en "
+                    "el entrenamiento del candidato. "
+                    "El modelo promovido conserva ese período "
+                    "sin utilizarlo para ajustarse."
+                ),
+            }
