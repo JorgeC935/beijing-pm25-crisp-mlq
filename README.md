@@ -1,243 +1,156 @@
-# Pronóstico de PM2.5 — Beijing Wanliu
+# Wanliu Air Forecast
 
-Aplicación web que utiliza un modelo de aprendizaje automático para pronosticar la concentración de PM2.5 durante las próximas 24 horas en la estación Wanliu, Beijing.
+Aplicación académica para estimar el PM2.5 de la estación Wanliu exactamente **6 horas después** de registrar una medición.
 
-El proyecto incluye una API REST desarrollada con FastAPI, una interfaz web y una base de datos PostgreSQL.
-
-## 1. Requisitos
-
-Para ejecutar el proyecto se necesita:
+## Requisitos
 
 - Python 3.13
-- PostgreSQL 15
-- Git
-- Un navegador web
+- PostgreSQL 15 o compatible
+- Git y navegador web
+- Windows PowerShell (los comandos siguientes están escritos para Windows)
 
-Los siguientes comandos están preparados para Windows PowerShell.
-
-## 2. Descargar el proyecto
-
-Abrir PowerShell y ejecutar:
+## 1. Instalar dependencias
 
 ```powershell
-git clone --branch develop https://github.com/JorgeC935/beijing-pm25-crisp-mlq.git
+git clone https://github.com/JorgeC935/beijing-pm25-crisp-mlq.git
 cd beijing-pm25-crisp-mlq
-```
-
-### Crear el entorno virtual
-
-```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements_api.txt
 ```
 
-Si PowerShell bloquea la activación, ejecutar:
+Si PowerShell bloquea la activación:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-Después, volver a activar el entorno virtual.
-
-### Instalar las dependencias
-
-```powershell
-python -m pip install -r requirements_api.txt
-```
-
-Para trabajar también con los notebooks de entrenamiento:
+Para abrir y ejecutar los notebooks de investigación, instala también:
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-## 3. Configurar PostgreSQL
+## 2. Preparar PostgreSQL
 
-La aplicación utiliza la base de datos `beijing_pm25` y el usuario `beijing_app`.
+### Base de datos nueva
 
-### Crear el usuario y la base de datos
-
-Abrir PowerShell y ejecutar:
-
-```powershell
-& "C:\Program Files\PostgreSQL\15\bin\psql.exe" -h 127.0.0.1 -U postgres -d postgres -W
-```
-
-Dentro de PostgreSQL, ejecutar:
-
-```sql
-CREATE ROLE beijing_app LOGIN;
-```
-
-Establecer una contraseña:
-
-```text
-\password beijing_app
-```
-
-Crear la base de datos:
-
-```sql
-CREATE DATABASE beijing_pm25 OWNER beijing_app;
-```
-
-Salir de PostgreSQL:
-
-```text
-\q
-```
-
-Si el usuario y la base de datos ya existen, omitir este paso.
-
-### Crear las tablas
-
-Desde la carpeta principal del proyecto, ejecutar:
+Conéctate como administrador `postgres`:
 
 ```powershell
 $psql = "C:\Program Files\PostgreSQL\15\bin\psql.exe"
-
-& $psql -h 127.0.0.1 -U beijing_app -d beijing_pm25 -W -v ON_ERROR_STOP=1 -f ".\database\01_schema.sql"
-
-& $psql -h 127.0.0.1 -U beijing_app -d beijing_pm25 -W -v ON_ERROR_STOP=1 -f ".\database\02_api.sql"
+& $psql -h 127.0.0.1 -U postgres -d postgres -W
 ```
 
-PostgreSQL solicitará la contraseña del usuario `beijing_app`.
+En `psql`:
 
-**Nota:** si PostgreSQL está instalado en otra ubicación, ajustar la ruta de `psql.exe`.
-
-## 4. Descargar e importar los datos
-
-Descargar el dataset **Beijing Multi-Site Air Quality** desde:
-
-https://archive.ics.uci.edu/dataset/501/beijingmultisiteairqualitydata
-
-Guardar el archivo ZIP descargado en:
-
-```text
-data/raw/beijing+multi+site+air+quality+data.zip
+```sql
+CREATE ROLE beijing_app LOGIN;
+\password beijing_app
+CREATE DATABASE wanliu_pm25_6h OWNER beijing_app;
+\q
 ```
 
-Si la carpeta no existe, crearla:
+Si el usuario o la base ya existen, no repitas sus instrucciones.
+
+Desde la raíz del proyecto, crea las tablas:
 
 ```powershell
-New-Item -ItemType Directory -Force ".\data\raw"
+& $psql -h 127.0.0.1 -U beijing_app -d wanliu_pm25_6h -W -v ON_ERROR_STOP=1 -f ".\database\schema.sql"
 ```
 
-No es necesario descomprimir el archivo.
+Si tienes una base anterior de 24 horas (`wanliu_pm25`), consérvala como respaldo. No ejecutes la migración sobre `wanliu_pm25_6h` recién creada. Si ya existe esta última y tiene el esquema de seis horas, no repitas la creación ni la importación.
 
-Para importar los datos a PostgreSQL:
+## 3. Ejecutar la aplicación
+
+Abre dos terminales desde la carpeta del proyecto.
+
+**Terminal 1 — API REST:**
+
+Copia `.env.example` a `.env` si todavía no existe, y escribe tu contraseña local en `.env`. No subas este archivo a GitHub.
 
 ```powershell
-python src/importar_datos.py
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+notepad .env
 ```
 
-El programa solicitará la contraseña de la base de datos.
-
-Una importación correcta debe registrar **12 estaciones y 420.768 observaciones**.
-
-La importación inicial se realiza una sola vez, sobre una base de datos sin observaciones.
-
-## 5. Ejecutar la aplicación
-
-Se deben abrir dos terminales desde la carpeta del proyecto.
-
-### Terminal 1 — API REST
-
-Activar el entorno virtual, configurar la contraseña e iniciar FastAPI:
+En una terminal nueva:
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-$env:BEIJING_DB_PASSWORD = Read-Host "Contraseña de PostgreSQL"
-python -m uvicorn src.api:app --reload
+python -m uvicorn src.api:app --reload --port 8000 --env-file .env
 ```
 
-La API estará disponible en:
+Alternativamente, puedes usar variables de entorno temporales (sin `.env`):
 
-http://127.0.0.1:8000
+```powershell
+$env:BEIJING_DB_NAME = "wanliu_pm25_6h"
+$env:BEIJING_DB_PASSWORD = Read-Host "Contraseña de beijing_app"
+python -m uvicorn src.api:app --reload --port 8000
+```
 
-La documentación interactiva de Swagger estará en:
+Estas variables se pierden al cerrar PowerShell y tienen prioridad sobre el archivo `.env`.
 
-http://127.0.0.1:8000/docs
+Swagger: http://127.0.0.1:8000/docs
 
-### Terminal 2 — Interfaz web
-
-Ejecutar:
+**Terminal 2 — interfaz web:**
 
 ```powershell
 python -m http.server 5500 --directory frontend
 ```
 
-Abrir la aplicación en:
+Abre http://127.0.0.1:5500. Mantén ambas terminales abiertas.
 
-**http://127.0.0.1:5500**
+## 4. Entrenamiento inicial
 
-Mantener ambas terminales abiertas mientras se utiliza el sistema.
+1. Abre la pestaña **Entrenamiento**.
+2. Si PostgreSQL ya contiene el histórico de Wanliu, pulsa **Entrenar con histórico disponible**.
+3. Si la base está vacía, selecciona el archivo `PRSA_Data_Wanliu_20130301-20170228.csv` y pulsa **Importar CSV y entrenar**.
+4. Espera a que finalice el proceso. El modelo y sus métricas quedarán registrados en PostgreSQL y el artefacto se guardará en `models/wanliu_6h/`.
 
-## 6. Utilizar la aplicación
+El entrenamiento inicial utiliza solamente el histórico original. Las mediciones simuladas que ya estén guardadas no se mezclan en este primer ajuste.
 
-Desde la interfaz web se pueden realizar las siguientes operaciones:
+## 5. Uso
 
-1. **Generar pronóstico:** ingresar una medición ambiental y obtener las predicciones de PM2.5 para las siguientes 24 horas.
-2. **Consultar historial:** ver las mediciones ingresadas y los pronósticos anteriores.
-3. **Ver métricas:** consultar el rendimiento y la versión del modelo.
-4. **Cargar CSV:** agregar nuevas mediciones a la base de datos.
-5. **Reentrenar:** solicitar la actualización del modelo cuando existan suficientes datos nuevos válidos.
+- **Pronóstico:** registra una medición individual. El sistema asigna automáticamente la siguiente fecha y hora y devuelve una estimación de PM2.5 a +6 horas.
+- **Métricas:** consulta MAE, RMSE y R² del modelo y compáralos con persistencia.
+- **Historial:** consulta cada medición ingresada y su único pronóstico. La observación posterior y el error aparecen cuando se registra el valor de la fecha objetivo.
+- **Reentrenamiento:** desde una medición nueva, si existe un origen válido seis horas antes, se puede ajustar un candidato desde cero con el mismo histórico de ajuste inicial (entrenamiento + validación) y todos los ejemplos cuyo objetivo nuevo ya se conoce, incluidos los que tienen origen histórico. No se exige un mínimo de 7, 30 ni 37 mediciones. Se compara el candidato, el modelo activo compatible y persistencia sobre una referencia histórica común: parte fija del conjunto de prueba inicial, excluyendo las últimas 30 horas de contexto respecto a la primera medición simulada (6 h de horizonte + 24 h de rezagos). La referencia y sus objetivos no entran al ajuste. La promoción demostrativa requiere MAE menor que el activo y persistencia, y RMSE no superior al activo. Un modelo activo de protocolo anterior no compatible se conserva sin comparación contra él. No se garantiza promoción. La referencia es retrospectiva y se reutiliza en solicitudes sucesivas: no constituye una prueba independiente del rendimiento futuro ni una validación con datos ambientales reales. Todos los candidatos con datos simulados se identifican como demostrativos.
 
-La aplicación trabaja con una serie histórica. Por eso, antes de introducir una medición, se debe consultar la **siguiente fecha y hora esperada**.
+La interfaz no importa CSV de mediciones simuladas. El único CSV que se carga desde ella es el dataset histórico del entrenamiento inicial.
 
-En una base recién importada, normalmente será:
+## 6. Notebooks
 
-```text
-2017-03-01T00:00:00
-```
+Los notebooks `01`, `02` y `03` documentan la exploración, preparación y modelado inicial. El notebook `04_Modelado_Wanliu_PM25_6h.ipynb` contiene la experimentación del objetivo a seis horas, comparación de modelos y búsqueda de hiperparámetros.
 
-Las siguientes mediciones deben ingresarse en orden, avanzando exactamente una hora.
+La API utiliza las 32 características y los hiperparámetros seleccionados en el notebook 04. No es necesario ejecutar Jupyter para utilizar la aplicación.
 
-### Formato para cargar un CSV
+## 7. Endpoints principales
 
-El archivo debe incluir, como mínimo, `observed_at` y `pm25`. Se recomienda incluir todas las variables ambientales:
-
-```csv
-observed_at,pm25,pm10,so2,no2,co,o3,temp,pres,dewp,rain,wspm,wd
-2017-03-01T00:00:00,75,100,10,35,600,45,8,1015,-5,0,2,NW
-2017-03-01T01:00:00,76,102,11,36,610,44,8,1015,-5,0,2.1,NW
-```
-
-Los valores anteriores son solamente un ejemplo de prueba.
-
-La primera fecha debe coincidir con la hora esperada por la aplicación.
-
-El archivo debe contener como máximo 1.000 registros, no superar 3 MB y mantener horas consecutivas.
-
-La carga CSV incorpora observaciones, pero no genera pronósticos ni reentrena automáticamente.
-
-## 7. Endpoints de la API
-
-| Método | Endpoint | Descripción |
+| Método | Ruta | Función |
 |---|---|---|
-| GET | `/state` | Consultar la siguiente hora esperada |
-| POST | `/predict` | Generar un pronóstico de 24 horas |
-| GET | `/predictions` | Consultar el historial |
-| GET | `/metrics` | Consultar las métricas del modelo |
-| POST | `/training-data` | Subir nuevas mediciones CSV |
-| POST | `/retrain` | Solicitar reentrenamiento |
+| GET | `/state` | Estado del sistema y siguiente hora |
+| POST | `/train-initial` | Importar histórico si hace falta y entrenar |
+| POST | `/predict` | Registrar medición y pronosticar a +6 h |
+| GET | `/predictions` | Historial de pronósticos a +6 h |
+| GET | `/metrics` | Métricas del modelo |
+| POST | `/retrain` | Entrenar y evaluar un candidato |
+| GET | `/models` | Versiones de modelos de seis horas |
 
-Todos pueden probarse desde Swagger:
+## 8. Pruebas
 
-http://127.0.0.1:8000/docs
+Con el entorno virtual activo:
 
-## 8. Si ocurre algún problema
+```powershell
+python -m compileall -q src tests
+python -m pytest -q
+```
 
-**No conecta con PostgreSQL:** verificar que el servicio esté iniciado, que la base de datos exista y que `BEIJING_DB_PASSWORD` se haya configurado en la terminal de FastAPI.
+## Solución de problemas
 
-**La fecha ingresada no es válida:** consultar `GET /state` e ingresar exactamente la hora indicada.
+- Si falta `BEIJING_DB_PASSWORD`, verifica el archivo `.env` y el argumento `--env-file .env`, o define la variable en la misma terminal donde ejecutas Uvicorn.
+- Si aparece un error por `horizon_hours` o `processed_observations.target`, verifica que la API apunta a `wanliu_pm25_6h`, no a la base anterior. No ejecutes una migración sin revisar primero el esquema.
+- Si la interfaz no conecta, comprueba el puerto de Uvicorn y selecciona el mismo en la parte superior.
+- Si falta el archivo del modelo activo, revisa el registro en PostgreSQL y `models/wanliu_6h/`.
 
-**El frontend no obtiene resultados:** comprobar que FastAPI continúa ejecutándose en el puerto 8000.
-
-**No se encuentra el modelo:** verificar que exista el archivo `models/wanliu_pm25_24h.joblib`.
-
----
-
-**Proyecto académico — Taller de Sistemas Inteligentes**
-
-Repositorio: https://github.com/JorgeC935/beijing-pm25-crisp-mlq
+Proyecto académico. Utiliza datos históricos y mediciones simuladas; no es un sistema conectado a sensores ambientales en tiempo real.
