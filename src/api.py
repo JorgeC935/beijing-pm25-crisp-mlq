@@ -1,426 +1,470 @@
-from __future__ import annotations
-
-import csv
-import io
-import os
-import threading
-from contextlib import contextmanager
+"""API REST de Wanliu Air Forecast: pronóstico único de PM2.5 a +6 horas."""
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Annotated
+from uuid import uuid4
 
 import joblib
-import numpy as np
-import pandas as pd
 import psycopg
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field, field_validator
 from psycopg.types.json import Jsonb
-from sklearn.base import clone
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
-ROOT = Path(__file__).resolve().parents[1]
-MODEL_ORIGINAL = ROOT / "models" / "wanliu_pm25_24h.joblib"
-MODEL_UPDATED = ROOT / "models" / "wanliu_pm25_latest.joblib"
-MODEL_LOCK = threading.RLock()
-STATION_NAME = "Wanliu"
-NUMERIC = ("pm25", "pm10", "so2", "no2", "co", "o3", "temp", "pres", "dewp", "rain", "wspm")
-OBS_COLUMNS = ("observed_at",) + NUMERIC + ("wd",)
+from . import database as db
+from .data_import import parse_historical
+from .prediction import forecast
+from .preprocessing import FEATURE_COLUMNS, HORIZON_HOURS
+from .schemas import Observation
+from .train_model import ALGORITHM, PARAMETERS, RETRAIN_PROTOCOL, train
 
-app = FastAPI(title="Pronóstico PM2.5 Wanliu", version="1.0", description="API para predecir PM2.5 a 24 horas, mantener historial y reentrenar el modelo.")
+app = FastAPI(
+    title="Wanliu Air Forecast",
+    version="3.0",
+    description=(
+        "Pronóstico académico de PM2.5 exactamente seis horas después "
+        "de una medición de la estación Wanliu."
+    ),
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5500", "http://127.0.0.1:5500", "null"],
-    allow_credentials=False,
+    allow_origins=["http://127.0.0.1:5500", "http://localhost:5500"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-def load_package():
-    ruta = MODEL_UPDATED if MODEL_UPDATED.exists() else MODEL_ORIGINAL
-    if not ruta.exists():
-        raise HTTPException(503, f"No se encontró el modelo: {ruta}")
-    return joblib.load(ruta)
-
-
-def db_params():
-    password = os.getenv("BEIJING_DB_PASSWORD")
-    if not password:
-        raise HTTPException(503, "Falta configurar BEIJING_DB_PASSWORD en la terminal que ejecuta la API")
-    return dict(
-        host=os.getenv("BEIJING_DB_HOST", "127.0.0.1"),
-        port=int(os.getenv("BEIJING_DB_PORT", "5432")),
-        dbname=os.getenv("BEIJING_DB_NAME", "beijing_pm25"),
-        user=os.getenv("BEIJING_DB_USER", "beijing_app"),
-        password=password,
-        row_factory=psycopg.rows.dict_row,
+@app.exception_handler(psycopg.Error)
+def database_error(request: Request, exc: psycopg.Error):
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": (
+                "Error de PostgreSQL. Verifica la conexión, los permisos y "
+                "que se haya ejecutado schema.sql o migrate_to_6h.sql."
+            )
+        },
     )
 
 
-@contextmanager
-def connect():
+@app.exception_handler(RuntimeError)
+def runtime_error(request: Request, exc: RuntimeError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+def read_csv(file: UploadFile, maximum: int) -> bytes:
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(422, "Selecciona un archivo CSV.")
+    raw = file.file.read(maximum + 1)
+    if len(raw) > maximum:
+        raise HTTPException(413, "El archivo es demasiado grande.")
+    return raw
+
+
+def require_model(conn):
+    model = db.current_model(conn)
+    if model is None:
+        raise HTTPException(
+            409,
+            "Primero debes entrenar el modelo de PM2.5 a seis horas.",
+        )
+    return model
+
+
+def load_model(record):
+    if int(record["horizon_hours"]) != HORIZON_HOURS:
+        raise HTTPException(409, "La versión seleccionada no es compatible con el horizonte de seis horas.")
+
+    path = (db.ROOT / record["artifact_path"]).resolve()
+    if not path.is_relative_to(db.MODEL_DIR.resolve()) or not path.is_file():
+        raise HTTPException(
+            503,
+            "No se encuentra el archivo del modelo registrado. "
+            "No se cargarán automáticamente modelos antiguos.",
+        )
+
+    package = joblib.load(path)
+    if (
+        package.get("version") != record["version"]
+        or package.get("horizon_hours") != HORIZON_HOURS
+        or package.get("feature_columns") != FEATURE_COLUMNS
+    ):
+        raise HTTPException(
+            503,
+            "El artefacto no coincide con la versión de seis horas registrada.",
+        )
+    return package["model"]
+
+
+def train_and_persist(conn, kind: str, incumbent_record=None):
+    all_data = db.observations(conn)
+    simulated_count = int(all_data["is_simulated"].sum())
+
+    # El entrenamiento inicial se basa únicamente en el dataset histórico UCI.
+    # El reentrenamiento sí incorpora las mediciones nuevas registradas en la UI.
+    if kind == "initial":
+        data = all_data.loc[~all_data["is_simulated"]].copy()
+        incumbent = None
+    else:
+        data = all_data.copy()
+        incumbent = load_model(incumbent_record)
+
+    if data.empty:
+        raise ValueError("No hay observaciones históricas para entrenar.")
+
+    run_id = db.create_run(
+        conn,
+        kind,
+        "historical" if kind == "initial" else "simulation",
+        PARAMETERS,
+        len(data),
+        simulated_count,
+    )
+
+    compatible = True
+    if kind == "retrain":
+        prior = conn.execute(
+            "SELECT kind, split_metadata FROM training_runs WHERE id = %s",
+            (incumbent_record["training_run_id"],),
+        ).fetchone()
+        protocol = (prior["split_metadata"] or {}).get("protocol")
+        compatible = (
+            (prior["kind"] == "initial" and protocol == "70_15_15_chronological_with_6h_gap")
+            or (prior["kind"] == "retrain" and protocol == RETRAIN_PROTOCOL)
+        )
+    model, origins, metrics, metadata, comparison = train(
+        data, incumbent=incumbent, incumbent_compatible=compatible
+    )
+    is_active = kind == "initial" or bool(comparison["promoted"])
+    is_demo = kind == "retrain"
+
+    version = (
+        "wanliu-6h-"
+        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        + "-"
+        + uuid4().hex[:8]
+    )
+
+    db.MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    artifact_path = db.MODEL_DIR / f"{version}.joblib"
+    temporary_path = artifact_path.with_suffix(".joblib.tmp")
+
+    package = {
+        "model": model,
+        "version": version,
+        "horizon_hours": HORIZON_HOURS,
+        "feature_columns": FEATURE_COLUMNS,
+        "algorithm": ALGORITHM,
+        "parameters": PARAMETERS,
+        "metrics": metrics,
+        "split_metadata": metadata,
+        "is_demo": is_demo,
+    }
+
     try:
-        with psycopg.connect(**db_params()) as conn:
-            yield conn
-    except (psycopg.OperationalError, psycopg.errors.UndefinedTable) as exc:
-        raise HTTPException(503, f"Error de PostgreSQL o esquema sin crear: {exc}") from exc
+        db.store_processed(conn, run_id, origins)
+        joblib.dump(package, temporary_path)
+        temporary_path.replace(artifact_path)
 
+        model_id = db.store_model(
+            conn=conn,
+            run_id=run_id,
+            version=version,
+            algorithm=ALGORITHM,
+            artifact_path=artifact_path.relative_to(db.ROOT).as_posix(),
+            feature_columns=FEATURE_COLUMNS,
+            active=is_active,
+            is_demo=is_demo,
+            training_target_end=metadata["training_target_end"],
+            metrics=metrics,
+            split_metadata=metadata,
+        )
+    except BaseException:
+        artifact_path.unlink(missing_ok=True)
+        raise
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
-def find_station(conn, lock=False):
-    suffix = " FOR UPDATE" if lock else ""
-    row = conn.execute("SELECT id FROM stations WHERE name = %s" + suffix, (STATION_NAME,)).fetchone()
-    if row is None:
-        raise HTTPException(404, "No existe la estación Wanliu en la base de datos")
-    return row["id"]
+    if kind == "initial":
+        note = (
+            "Modelo inicial entrenado con el histórico UCI de Wanliu. "
+            "La prueba temporal se mantuvo separada del ajuste."
+        )
+        status = "trained"
+    elif is_active:
+        note = (
+            comparison["promotion_reason"] +
+            f" Ejemplos nuevos usados en el ajuste: {metadata['new_training_examples']}. "
+            "No constituye validación de rendimiento futuro con datos reales."
+        )
+        status = "promoted"
+    else:
+        note = comparison.get("promotion_reason") or (
+            "El candidato no cumplió los criterios de mejora."
+        )
+        note += (
+            f" Ejemplos nuevos usados en el ajuste: "
+            f"{metadata.get('new_training_examples', 0)}. "
+            "La evaluación es demostrativa. Se conserva el modelo activo anterior."
+        )
+        status = "not_promoted"
 
-
-class Observation(BaseModel):
-    model_config = ConfigDict(allow_inf_nan=False)
-
-    observed_at: datetime
-    pm25: float = Field(ge=0)
-    pm10: float | None = Field(default=None, ge=0)
-    so2: float | None = Field(default=None, ge=0)
-    no2: float | None = Field(default=None, ge=0)
-    co: float | None = Field(default=None, ge=0)
-    o3: float | None = Field(default=None, ge=0)
-    temp: float | None = None
-    pres: float | None = Field(default=None, gt=0)
-    dewp: float | None = None
-    rain: float | None = Field(default=None, ge=0)
-    wspm: float | None = Field(default=None, ge=0)
-    wd: str = "Desconocido"
-
-    @field_validator("observed_at")
-    @classmethod
-    def naive_beijing_local(cls, value):
-        if value.tzinfo is not None:
-            raise ValueError("Enviar hora local de Beijing sin zona horaria: YYYY-MM-DDTHH:MM:SS")
-        if value.minute or value.second or value.microsecond:
-            raise ValueError("La observación debe corresponder a una hora exacta")
-        return value
-
-    @field_validator("wd")
-    @classmethod
-    def valid_wind(cls, value):
-        return value.strip() or "Desconocido"
-
-
-def next_expected(conn, station_id):
-    row = conn.execute("SELECT MAX(observed_at) AS last_time FROM observations WHERE station_id = %s", (station_id,)).fetchone()
-    if row["last_time"] is None:
-        raise HTTPException(409, "Wanliu no contiene historial previo")
-    return row["last_time"] + timedelta(hours=1)
-
-
-def insert_observation(conn, station_id, ob: Observation):
-    expected = next_expected(conn, station_id)
-    if ob.observed_at != expected:
-        raise HTTPException(409, f"Fecha no consecutiva. Se esperaba {expected.isoformat(sep=' ')} (hora local de Beijing)")
-    row = ob.model_dump()
-    row_no = conn.execute(
-        "SELECT COALESCE(MAX(source_row_no), 0) + 1 AS next_no FROM observations WHERE station_id = %s",
-        (station_id,),
-    ).fetchone()["next_no"]
-    conn.execute(
-        """INSERT INTO observations
-        (station_id, observed_at, source_row_no,
-         pm25, pm10, so2, no2, co, o3,
-         temp, pres, dewp, rain, wspm, wd)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s)""",
-        (station_id, row["observed_at"], row_no)
-        + tuple(row[c] for c in NUMERIC)
-        + (row["wd"],),
-    )
-
-
-def fetch_recent(conn, station_id, limit=48):
-    rows = conn.execute(
-        """SELECT observed_at, pm25, pm10, so2, no2, co, o3, temp, pres, dewp, rain, wd, wspm
-        FROM observations WHERE station_id = %s ORDER BY observed_at DESC LIMIT %s""",
-        (station_id, limit),
-    ).fetchall()
-    return list(reversed(rows))
-
-
-def make_prediction_features(rows, columns):
-    if len(rows) < 48:
-        raise HTTPException(409, "Se necesitan al menos 48 mediciones horarias para crear el historial")
-    times = [r["observed_at"] for r in rows]
-    if any(b - a != timedelta(hours=1) for a, b in zip(times, times[1:])):
-        raise HTTPException(409, "El historial más reciente presenta horas discontinuas")
-    current = rows[-1]
-    pm = pd.Series([r["pm25"] for r in rows], dtype="float64")
-    base = dict(current)
-    for i in range(48):
-        base[f"pm25_hist_{i:02d}"] = rows[-i - 1]["pm25"]
-    for window in (6, 12, 24, 48):
-        sub = pm.iloc[-window:]
-        base[f"pm25_media_{window}"] = sub.mean()
-        base[f"pm25_cuenta_{window}"] = sub.count()
-        base[f"pm25_std_{window}"] = sub.std()
-    for lag in (1, 24):
-        base[f"temp_lag_{lag}"] = rows[-lag - 1]["temp"]
-        base[f"pm10_lag_{lag}"] = rows[-lag - 1]["pm10"]
-    base["hora"] = current["observed_at"].hour
-    base["mes"] = current["observed_at"].month
-    base["dia_semana"] = current["observed_at"].weekday()
-    base["wd"] = current["wd"] or "Desconocido"
-    features = []
-    for h in range(1, 25):
-        future = current["observed_at"] + timedelta(hours=h)
-        row = dict(base)
-        row.update({
-            "horizonte": h,
-            "hora_objetivo": future.hour,
-            "mes_objetivo": future.month,
-            "dia_semana_objetivo": future.weekday(),
-            "hora_sin": np.sin(2 * np.pi * future.hour / 24),
-            "hora_cos": np.cos(2 * np.pi * future.hour / 24),
-            "mes_sin": np.sin(2 * np.pi * (future.month - 1) / 12),
-            "mes_cos": np.cos(2 * np.pi * (future.month - 1) / 12),
-            "pm25_ayer": base[f"pm25_hist_{24 - h:02d}"],
-        })
-        features.append(row)
-    df = pd.DataFrame(features)
-    missing = [c for c in columns if c not in df]
-    if missing:
-        raise HTTPException(500, f"Faltan características requeridas por el modelo: {missing}")
-    return df.loc[:, columns]
-
-
-def forecast(package, rows):
-    columns = package["feature_columns"]
-    x = make_prediction_features(rows, columns)
-    values = np.maximum(package.get("clip_min", 0.0), package["model"].predict(x))
-    current = rows[-1]["observed_at"]
-    predictions = [{
-        "horizonte": i,
-        "observed_at": (current + timedelta(hours=i)).isoformat(),
-        "pm25_predicho": round(float(value), 3),
-    } for i, value in enumerate(values, 1)]
-    return predictions
-
-
-@app.get("/")
-def root():
-    return {"service": "Wanliu PM2.5", "swagger": "/docs", "horizons": 24}
+    return {
+        "status": status,
+        "model_id": model_id,
+        "model_version": version,
+        "horizon_hours": HORIZON_HOURS,
+        "is_active": is_active,
+        "is_demo": is_demo,
+        "observations": int(len(data)),
+        "simulated_observations": simulated_count,
+        "feature_count": len(FEATURE_COLUMNS),
+        "split": metadata,
+        "metrics": metrics,
+        "baseline_metrics": metadata.get("baseline_metrics", {}),
+        "comparison": comparison,
+        "note": note,
+    }
 
 
 @app.get("/state")
 def state():
-    with connect() as conn:
-        station_id = find_station(conn)
-        return {"station": STATION_NAME, "next_expected_observed_at": next_expected(conn, station_id).isoformat()}
+    with db.connect() as conn:
+        counts = conn.execute(
+            """SELECT
+                   count(*) AS observations,
+                   count(*) FILTER (WHERE NOT is_simulated) AS historical,
+                   count(*) FILTER (WHERE is_simulated) AS simulated
+               FROM observations"""
+        ).fetchone()
+        model = db.current_model(conn)
+        return {
+            "station": "Wanliu",
+            "trained": model is not None,
+            "version": model["version"] if model else None,
+            "horizon_hours": HORIZON_HOURS if model else None,
+            "is_demo": model["is_demo"] if model else False,
+            "next_expected_observed_at": db.next_time(conn),
+            **counts,
+        }
+
+
+@app.post("/train-initial")
+def initial_training(file: UploadFile | None = File(default=None)):
+    with db.connect() as conn:
+        db.lock(conn)
+
+        if db.current_model(conn):
+            raise HTTPException(409, "Ya existe un modelo de seis horas activo.")
+
+        counts = conn.execute(
+            """SELECT
+                   count(*) FILTER (WHERE NOT is_simulated) AS historical,
+                   count(*) FILTER (WHERE is_simulated) AS simulated
+               FROM observations"""
+        ).fetchone()
+
+        if counts["historical"] == 0:
+            if file is None:
+                raise HTTPException(
+                    422,
+                    "Selecciona el CSV histórico de Wanliu para importarlo y entrenar.",
+                )
+            try:
+                frame = parse_historical(read_csv(file, 5_000_000))
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(422, str(exc)) from exc
+            db.import_historical(conn, frame, Path(file.filename).name)
+        elif file is not None:
+            raise HTTPException(
+                409,
+                "Ya existe un dataset histórico en PostgreSQL. "
+                "El entrenamiento utilizará esos registros para evitar duplicarlos.",
+            )
+
+        try:
+            return train_and_persist(conn, "initial")
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/predict")
 def predict(observation: Observation):
-    with MODEL_LOCK:
-        package = load_package()
-        with connect() as conn:
-            station_id = find_station(conn, lock=True)
-            insert_observation(conn, station_id, observation)
-            rows = fetch_recent(conn, station_id)
-            predicted = forecast(package, rows)
-            original = observation.model_dump(mode="json")
-            record = conn.execute(
-                """INSERT INTO prediction_runs
-                (station_id, observed_at, input_data, forecast, model_version, model_name)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                (station_id, observation.observed_at, Jsonb(original), Jsonb(predicted),
-                 package["version"], package.get("model_name", "modelo")),
-            ).fetchone()
-            return {"id": record["id"], "station": STATION_NAME,
-                    "observed_at": observation.observed_at.isoformat(),
-                    "model_version": package["version"], "input": original, "predictions": predicted}
+    with db.connect() as conn:
+        db.lock(conn)
+        model_record = require_model(conn)
+        model = load_model(model_record)
+
+        observed_at = db.next_time(conn)
+        if observed_at is None:
+            raise HTTPException(409, "No hay observaciones históricas.")
+
+        observation_id = db.insert_observation(conn, observation, observed_at)
+        history = db.observations(conn, limit=25)
+
+        try:
+            predicted = forecast(model, history)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+        target_at = observed_at + timedelta(hours=HORIZON_HOURS)
+        input_data = {
+            "observed_at": observed_at.isoformat(),
+            **observation.model_dump(),
+            "is_simulated": True,
+        }
+
+        prediction_run_id = conn.execute(
+            """INSERT INTO prediction_runs(observation_id,model_id,input_data)
+               VALUES (%s,%s,%s) RETURNING id""",
+            (observation_id, model_record["id"], Jsonb(input_data)),
+        ).fetchone()["id"]
+
+        conn.execute(
+            """INSERT INTO prediction_results(
+                   prediction_run_id,horizon,target_at,pm25_predicted
+               ) VALUES (%s,%s,%s,%s)""",
+            (prediction_run_id, HORIZON_HOURS, target_at, predicted),
+        )
+
+        return {
+            "id": prediction_run_id,
+            "station": "Wanliu",
+            "observed_at": observed_at.isoformat(),
+            "target_at": target_at.isoformat(),
+            "horizon_hours": HORIZON_HOURS,
+            "input": input_data,
+            "prediction": {
+                "horizon_hours": HORIZON_HOURS,
+                "target_at": target_at.isoformat(),
+                "pm25_predicted": predicted,
+            },
+            "model_version": model_record["version"],
+            "model_name": model_record["algorithm"],
+            "is_demo": model_record["is_demo"],
+        }
 
 
 @app.get("/predictions")
-def predictions(limit: int = Query(20, ge=1, le=100)):
-    with connect() as conn:
-        station_id = find_station(conn)
+def prediction_history(limit: int = Query(30, ge=1, le=100)):
+    with db.connect() as conn:
         rows = conn.execute(
-            """SELECT id, observed_at, input_data, forecast, model_version, model_name, created_at
-            FROM prediction_runs WHERE station_id = %s ORDER BY id DESC LIMIT %s""",
-            (station_id, limit),
+            """SELECT
+                   p.id,
+                   p.input_data AS input,
+                   p.created_at,
+                   o.observed_at,
+                   m.version AS model_version,
+                   m.algorithm AS model_name,
+                   m.is_demo,
+                   r.target_at,
+                   r.pm25_predicted,
+                   target.pm25 AS observed_pm25,
+                   target.is_simulated AS observed_is_simulated,
+                   CASE
+                       WHEN target.pm25 IS NOT NULL
+                       THEN abs(target.pm25 - r.pm25_predicted)
+                       ELSE NULL
+                   END AS absolute_error
+               FROM prediction_runs p
+               JOIN observations o ON o.id = p.observation_id
+               JOIN models m ON m.id = p.model_id
+               LEFT JOIN prediction_results r
+                   ON r.prediction_run_id = p.id AND r.horizon = %s
+               LEFT JOIN observations target ON target.observed_at = r.target_at
+               WHERE m.horizon_hours = %s
+               ORDER BY p.id DESC
+               LIMIT %s""",
+            (HORIZON_HOURS, HORIZON_HOURS, limit),
         ).fetchall()
-        return [{"id": r["id"], "observed_at": r["observed_at"],
-                 "input": r["input_data"], "predictions": r["forecast"],
-                 "model_version": r["model_version"], "model_name": r["model_name"],
-                 "created_at": r["created_at"]} for r in rows]
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["prediction"] = {
+                "horizon_hours": HORIZON_HOURS,
+                "target_at": item.pop("target_at"),
+                "pm25_predicted": item.pop("pm25_predicted"),
+            }
+            item["observed_pm25"] = item.pop("observed_pm25")
+            item["observed_is_simulated"] = item.pop("observed_is_simulated")
+            item["absolute_error"] = item.pop("absolute_error")
+            result.append(item)
+        return result
 
 
 @app.get("/metrics")
-def metrics():
-    with MODEL_LOCK:
-        package = load_package()
-        return {"station": package["station"], "version": package["version"],
-                "model_name": package.get("model_name"), "feature_count": len(package["feature_columns"]),
-                "feature_columns": package["feature_columns"],
-                "validation": package.get("validation_metrics"),
-                "test_initial": package.get("test_metrics"),
-                "test_initial_6h": package.get("test_metrics_6h"),
-                "retrain_evaluation": package.get("retrain_evaluation"),
-                "trained_at_utc": package.get("trained_at_utc")}
+def model_metrics(model_id: int | None = None):
+    with db.connect() as conn:
+        if model_id is None:
+            record = db.current_model(conn)
+        else:
+            record = conn.execute(
+                "SELECT * FROM models WHERE id = %s",
+                (model_id,),
+            ).fetchone()
 
-
-@app.post("/training-data")
-async def training_data(file: Annotated[UploadFile, File(description="CSV de observaciones nuevas y consecutivas de Wanliu")]):
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(400, "Sube un archivo .csv")
-    raw = await file.read(3_000_001)
-    if len(raw) > 3_000_000:
-        raise HTTPException(413, "El archivo debe tener como máximo 3 MB")
-    try:
-        text = raw.decode("utf-8-sig")
-        reader = csv.DictReader(io.StringIO(text))
-        if not reader.fieldnames or not {"observed_at", "pm25"}.issubset(reader.fieldnames):
-            raise ValueError("Faltan las columnas observed_at y pm25")
-        items = []
-        for n, row in enumerate(reader, 1):
-            if row.get("station") not in (None, "", "Wanliu"):
-                raise ValueError(f"La fila {n} no corresponde a Wanliu")
-            obj = {}
-            for key in OBS_COLUMNS:
-                val = row.get(key)
-                if val is None or str(val).strip() == "":
-                    if key == "wd":
-                        val = "Desconocido"
-                    elif key not in ("observed_at", "pm25"):
-                        val = None
-                obj[key] = val
-            items.append(Observation.model_validate(obj))
-        if not items:
-            raise ValueError("El CSV está vacío")
-        if len(items) > 1000:
-            raise ValueError("Máximo 1000 observaciones por archivo")
-    except Exception as exc:
-        raise HTTPException(422, f"CSV inválido: {exc}") from exc
-
-    with MODEL_LOCK:
-        with connect() as conn:
-            station_id = find_station(conn, lock=True)
-            expected = next_expected(conn, station_id)
-            for idx, item in enumerate(items):
-                if item.observed_at != expected + timedelta(hours=idx):
-                    raise HTTPException(409, f"La fila {idx + 1} debe tener fecha {(expected + timedelta(hours=idx)).isoformat()}")
-            for item in items:
-                insert_observation(conn, station_id, item)
-            conn.execute(
-                "INSERT INTO training_uploads (filename, rows_inserted, first_time, last_time) VALUES (%s, %s, %s, %s)",
-                (file.filename, len(items), items[0].observed_at, items[-1].observed_at),
+        if record is None:
+            raise HTTPException(404, "No hay un modelo de seis horas disponible.")
+        if int(record["horizon_hours"]) != HORIZON_HOURS:
+            raise HTTPException(
+                409,
+                "Esta versión pertenece al sistema anterior de 24 horas.",
             )
-    return {"status": "ok", "inserted": len(items), "first": items[0].observed_at,
-            "last": items[-1].observed_at, "note": "Los datos se incorporan al reentrenar manualmente."}
 
+        rows = conn.execute(
+            """SELECT evaluation_set,scope,horizon_start,horizon_end,
+                      mae,rmse,r2,sample_count
+               FROM model_metrics
+               WHERE model_id = %s
+               ORDER BY evaluation_set""",
+            (record["id"],),
+        ).fetchall()
+        run = conn.execute(
+            "SELECT split_metadata FROM training_runs WHERE id = %s",
+            (record["training_run_id"],),
+        ).fetchone()
+        metadata = run["split_metadata"] or {}
 
-def build_retrain_matrix(data: pd.DataFrame, feature_columns):
-    frame = data.copy().sort_values("observed_at").reset_index(drop=True)
-    pm = frame["pm25"]
-    frame["wd"] = frame["wd"].fillna("Desconocido")
-    for lag in range(48):
-        frame[f"pm25_hist_{lag:02d}"] = pm.shift(lag)
-    for window in (6, 12, 24, 48):
-        frame[f"pm25_media_{window}"] = pm.rolling(window, min_periods=1).mean()
-        frame[f"pm25_cuenta_{window}"] = pm.rolling(window, min_periods=1).count()
-        frame[f"pm25_std_{window}"] = pm.rolling(window, min_periods=2).std()
-    for lag in (1, 24):
-        for name in ("temp", "pm10"):
-            frame[f"{name}_lag_{lag}"] = frame[name].shift(lag)
-    frame["hora"] = frame["observed_at"].dt.hour
-    frame["mes"] = frame["observed_at"].dt.month
-    frame["dia_semana"] = frame["observed_at"].dt.day_of_week
-    valid = (
-        (frame["observed_at"].shift(47) == frame["observed_at"] - pd.Timedelta(hours=47)) &
-        (frame["observed_at"].shift(-24) == frame["observed_at"] + pd.Timedelta(hours=24)) &
-        frame["pm25"].notna()
-    )
-    for h in range(1, 25):
-        frame[f"y_{h:02d}"] = pm.shift(-h)
-        valid &= frame[f"y_{h:02d}"].notna()
-    frame = frame.loc[valid].copy()
-    if len(frame) < 100:
-        raise HTTPException(409, "No hay suficientes orígenes con 48 horas de historial y 24 objetivos reales")
-    parts = []
-    for h in range(1, 25):
-        portion = frame.copy()
-        future = portion["observed_at"] + pd.Timedelta(hours=h)
-        portion["horizonte"] = h
-        portion["hora_objetivo"] = future.dt.hour
-        portion["mes_objetivo"] = future.dt.month
-        portion["dia_semana_objetivo"] = future.dt.day_of_week
-        portion["hora_sin"] = np.sin(2 * np.pi * future.dt.hour / 24)
-        portion["hora_cos"] = np.cos(2 * np.pi * future.dt.hour / 24)
-        portion["mes_sin"] = np.sin(2 * np.pi * (future.dt.month - 1) / 12)
-        portion["mes_cos"] = np.cos(2 * np.pi * (future.dt.month - 1) / 12)
-        portion["pm25_ayer"] = portion[f"pm25_hist_{24 - h:02d}"]
-        portion["target"] = portion[f"y_{h:02d}"]
-        parts.append(portion[list(feature_columns) + ["target", "observed_at"]])
-    return pd.concat(parts, ignore_index=True)
+        return {
+            "station": "Wanliu",
+            "model_id": record["id"],
+            "version": record["version"],
+            "model_name": record["algorithm"],
+            "horizon_hours": HORIZON_HOURS,
+            "is_demo": record["is_demo"],
+            "is_active": record["is_active"],
+            "feature_count": len(record["feature_columns"]),
+            "feature_columns": record["feature_columns"],
+            "metrics": rows,
+            "baseline_metrics": metadata.get("baseline_metrics", {}),
+            "comparison": metadata.get("comparison"),
+            "split": metadata,
+        }
 
 
 @app.post("/retrain")
 def retrain():
-    with MODEL_LOCK:
-        current = load_package()
-        with connect() as conn:
-            station_id = find_station(conn, lock=True)
-            rows = conn.execute(
-                """SELECT observed_at, pm25, pm10, so2, no2, co, o3, temp, pres, dewp, rain, wd, wspm
-                FROM observations WHERE station_id = %s ORDER BY observed_at""", (station_id,)
-            ).fetchall()
-            data = pd.DataFrame(rows)
-            cols = current["feature_columns"]
-            samples = build_retrain_matrix(data, cols)
-            origins = data["observed_at"].sort_values().reset_index(drop=True)
-            cutoff = origins.iloc[int(len(origins) * 0.85)]
-            train = samples[samples["observed_at"] + pd.Timedelta(hours=24) < cutoff]
-            val = samples[samples["observed_at"] >= cutoff]
-            if len(train) < 1000 or len(val) < 100:
-                raise HTTPException(409, "El período disponible es insuficiente para la división cronológica de entrenamiento y validación")
-            candidate = clone(current["model"])
-            candidate.fit(train[cols], train["target"])
-            candidate_pred = np.maximum(0, candidate.predict(val[cols]))
-            incumbent_pred = np.maximum(0, current["model"].predict(val[cols]))
-            candidate_mae = float(mean_absolute_error(val["target"], candidate_pred))
-            incumbent_mae = float(mean_absolute_error(val["target"], incumbent_pred))
-            candidate_rmse = float(np.sqrt(mean_squared_error(val["target"], candidate_pred)))
-            incumbent_rmse = float(np.sqrt(mean_squared_error(val["target"], incumbent_pred)))
-            improved = candidate_mae < incumbent_mae
-            if improved:
-                candidate.fit(samples[cols], samples["target"])
-                updated = dict(current)
-                updated["model"] = candidate
-                updated["version"] = "wanliu-retrain-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-                updated["model_name"] = str(current.get("model_name", "HistGradientBoosting"))
-                updated["trained_at_utc"] = datetime.now(timezone.utc).isoformat()
-                updated["training_data_last_origin"] = str(samples["observed_at"].max())
-                updated["retrain_evaluation"] = {
-                    "candidate_validation_MAE": candidate_mae,
-                    "candidate_validation_RMSE": candidate_rmse,
-                    "incumbent_validation_MAE": incumbent_mae,
-                    "incumbent_validation_RMSE": incumbent_rmse,
-                    "comparison": "Corte cronológico común; métricas del candidato antes de ajustar sobre todos los datos",
-                }
-                updated["validation_metrics"] = {"MAE": candidate_mae, "RMSE": candidate_rmse}
-                updated["test_metrics"] = None
-                updated["test_metrics_6h"] = None
-                tmp = MODEL_UPDATED.with_suffix(".joblib.tmp")
-                MODEL_UPDATED.parent.mkdir(parents=True, exist_ok=True)
-                joblib.dump(updated, tmp)
-                os.replace(tmp, MODEL_UPDATED)
-            conn.execute(
-                """INSERT INTO retraining_runs
-                (promoted, candidate_mae, incumbent_mae, sample_count, validation_start)
-                VALUES (%s, %s, %s, %s, %s)""",
-                (improved, candidate_mae, incumbent_mae, len(samples), cutoff.to_pydatetime()),
-            )
-            return {"status": "promoted" if improved else "not_promoted",
-                    "candidate_validation": {"MAE": candidate_mae, "RMSE": candidate_rmse},
-                    "incumbent_validation": {"MAE": incumbent_mae, "RMSE": incumbent_rmse},
-                    "sample_count": len(samples),
-                    "note": "Si mejora, el modelo se reajusta con todos los ejemplos y se guarda en models/wanliu_pm25_latest.joblib."}
+    with db.connect() as conn:
+        db.lock(conn)
+        record = require_model(conn)
+        try:
+            return train_and_persist(conn, "retrain", record)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+
+@app.get("/models")
+def model_versions():
+    with db.connect() as conn:
+        return conn.execute(
+            """SELECT
+                   m.id,m.version,m.algorithm,m.horizon_hours,
+                   m.is_active,m.is_demo,m.created_at,m.training_target_end,
+                   r.kind,r.mode,r.status,r.split_metadata,
+                   r.observation_count,r.new_observation_count
+               FROM models m
+               JOIN training_runs r ON r.id = m.training_run_id
+               WHERE m.horizon_hours = %s
+               ORDER BY m.id DESC""",
+            (HORIZON_HOURS,),
+        ).fetchall()

@@ -231,3 +231,6 @@ data/processed/
 models/
 __pycache__/
 .ipynb_checkpoints/
+# Configuración local y plantilla sin secretos
+.env.*
+!.env.example
