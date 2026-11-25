@@ -1,149 +1,223 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Wanliu · Pronóstico de PM2.5</title>
-  <style>
-    :root{font-family:system-ui,Segoe UI,Arial,sans-serif;color:#203040;background:#f3f5f7}
-    *{box-sizing:border-box}body{margin:0}header{background:#162b43;color:white;padding:27px max(18px,calc((100vw - 1150px)/2))}header h1{margin:0 0 5px;font-size:1.75rem}header p{margin:0;color:#c6d6e5}
-    main{max-width:1150px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.card{background:white;border:1px solid #dce4ea;border-radius:12px;padding:20px;box-shadow:0 2px 10px #1934500a}h2{margin:0 0 13px;font-size:1.15rem}.wide{grid-column:1/-1}
-    label{display:block;margin-bottom:10px;color:#31455a;font-size:.88rem;font-weight:600}input,select{width:100%;margin-top:5px;border:1px solid #c9d6df;border-radius:7px;font:inherit;padding:10px;background:white;color:#213447}input[type=file]{padding:7px}
-    button{background:#176ea9;border:0;border-radius:7px;color:white;font-size:.93rem;font-weight:650;padding:10px 16px;cursor:pointer}button:hover{background:#115581}button:disabled{opacity:.6;cursor:wait}.secondary{background:#e9eff4;color:#183b57}.secondary:hover{background:#dbe7f0}
-    .row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.helper{font-size:.84rem;color:#52687c;line-height:1.55}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.82rem;background:#f5f7fa;border:1px solid #dde5ec;padding:10px;border-radius:7px;max-height:240px;overflow:auto}
-    .scroll{overflow:auto;max-height:375px}table{width:100%;border-collapse:collapse;font-size:.87rem}th,td{border-bottom:1px solid #e3eaf0;padding:8px;text-align:left;white-space:nowrap}th{background:#f1f5f8;position:sticky;top:0}footer{text-align:center;color:#607488;padding:28px;font-size:.83rem}#connection{font-weight:600}
-    @media(max-width:750px){main{grid-template-columns:1fr}.wide{grid-column:auto}.row{grid-template-columns:1fr 1fr}header{padding:24px 16px}}
-    @media(max-width:440px){.row{grid-template-columns:1fr}}
-  </style>
+  <meta name="theme-color" content="#12384b">
+  <title>Wanliu Air Forecast</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<header><h1>Wanliu · PM2.5</h1><p>Predicción de las próximas 24 horas · Beijing, China · Datos históricos de demostración</p></header>
-<main>
-  <section class="card wide">
-    <div class="actions"><button class="secondary" id="btnState">Comprobar API y siguiente hora</button><span id="connection">Sin comprobar conexión</span></div>
-    <p class="helper">La siguiente observación debe continuar exactamente una hora después del último registro almacenado. No se trata de un pronóstico del aire actual de 2026.</p>
-  </section>
-  <section class="card wide">
-    <h2>1 · Ingresar una observación y predecir</h2>
-    <form id="predictForm">
-      <div class="row">
-        <label>Fecha y hora (Beijing)<input type="datetime-local" step="3600" id="observed_at" required></label>
-        <label>PM2.5 (µg/m³)<input type="number" name="pm25" value="75" min="0" step="any" required></label>
-        <label>PM10<input type="number" name="pm10" value="100" min="0" step="any"></label>
-        <label>SO2<input type="number" name="so2" value="10" min="0" step="any"></label>
-        <label>NO2<input type="number" name="no2" value="35" min="0" step="any"></label>
-        <label>CO<input type="number" name="co" value="600" min="0" step="any"></label>
-        <label>O3<input type="number" name="o3" value="45" min="0" step="any"></label>
-        <label>Temperatura (°C)<input type="number" name="temp" value="8" step="any"></label>
-        <label>Presión (hPa)<input type="number" name="pres" value="1015" min="1" step="any"></label>
-        <label>Punto de rocío (°C)<input type="number" name="dewp" value="-5" step="any"></label>
-        <label>Lluvia (mm)<input type="number" name="rain" value="0" min="0" step="any"></label>
-        <label>Velocidad del viento (m/s)<input type="number" name="wspm" value="2" min="0" step="any"></label>
-        <label>Dirección del viento<input name="wd" value="NW" placeholder="NW, N, SE..."></label>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">≋</span>
+    <div>
+      <strong>Wanliu Air Forecast</strong>
+      <small>Pronóstico de PM2.5 · Beijing, China</small>
+    </div>
+  </div>
+  <div class="connection">
+    <label for="port">API</label>
+    <select id="port" aria-label="Puerto de la API">
+      <option value="8000">8000</option>
+      <option value="8001">8001</option>
+    </select>
+    <span id="connection" class="status-pill">Conectando…</span>
+  </div>
+</header>
+
+<div class="app-shell">
+  <nav class="tabs" aria-label="Secciones principales">
+    <button data-tab="forecast" class="active">Pronóstico</button>
+    <button data-tab="training">Entrenamiento</button>
+    <button data-tab="metrics">Métricas</button>
+    <button data-tab="history">Historial</button>
+  </nav>
+
+  <main>
+    <div id="notice" class="notice" role="status" aria-live="polite">
+      Consultando el estado del sistema…
+    </div>
+
+    <section id="forecast" class="section active">
+      <div class="page-heading">
+        <div>
+          <span class="eyebrow">ESTACIÓN WANLIU</span>
+          <h1>Pronóstico de calidad del aire</h1>
+          <p>Registra una medición y consulta el PM2.5 estimado exactamente seis horas después.</p>
+        </div>
+        <span class="horizon-tag">Horizonte fijo · +6 horas</span>
       </div>
-      <p class="helper">Los valores numéricos precargados son ficticios para probar la interfaz; reemplázalos por los de tu ejemplo.</p>
-      <button type="submit">Guardar medición y pronosticar 24 horas</button>
-    </form>
-    <p id="predictStatus" class="helper"></p>
-    <div id="predictionTable" class="scroll"></div>
-  </section>
-  <section class="card">
-    <h2>2 · Historial de predicciones</h2>
-    <button id="btnHistory">Consultar historial</button>
-    <p class="helper">Cada registro incluye las entradas enviadas y los 24 valores pronosticados.</p>
-    <div class="scroll" id="historyTable"></div>
-  </section>
-  <section class="card">
-    <h2>3 · Métricas del modelo</h2>
-    <button id="btnMetrics">Consultar métricas</button>
-    <pre id="metricsResult">Sin consultar</pre>
-  </section>
-  <section class="card">
-    <h2>4 · Subir CSV de observaciones</h2>
-    <p class="helper">El archivo debe tener <code>observed_at</code> y <code>pm25</code>. Opcionalmente: pm10, so2, no2, co, o3, temp, pres, dewp, rain, wspm, wd. Fechas consecutivas en hora local de Beijing.</p>
-    <form id="uploadForm"><label>Archivo CSV<input type="file" id="csvFile" accept=".csv,text/csv" required></label><button type="submit">Subir observaciones</button></form>
-    <pre id="uploadResult">Sin cargar</pre>
-  </section>
-  <section class="card">
-    <h2>5 · Reentrenar</h2>
-    <p class="helper">Entrena una nueva versión con los datos registrados, la compara en un período de validación y solo la publica si mejora el MAE. Puede tardar en ejecutarse.</p>
-    <button id="btnRetrain">Ejecutar reentrenamiento</button>
-    <pre id="retrainResult">Sin ejecutar</pre>
-  </section>
-</main>
-<footer>Proyecto académico · CRISP-ML(Q) · Wanliu (Beijing)</footer>
-<script>
-const API = 'http://127.0.0.1:8000';
-async function api(path, options) {
-  const response = await fetch(API + path, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail));
-  return data;
-}
-function pretty(data) { return JSON.stringify(data, null, 2); }
-function renderForecast(data) {
-  let table = document.createElement('table');
-  table.innerHTML = '<thead><tr><th>Hora futura</th><th>PM2.5 previsto (µg/m³)</th></tr></thead>';
-  const body = document.createElement('tbody');
-  for (const p of data) {
-    const tr = document.createElement('tr');
-    for (const value of [p.observed_at, p.pm25_predicho]) {
-      const td = document.createElement('td'); td.textContent = value; tr.appendChild(td);
-    }
-    body.appendChild(tr);
-  }
-  table.appendChild(body); return table;
-}
-async function state() {
-  try {
-    const response = await api('/state');
-    document.querySelector('#connection').textContent = 'API y PostgreSQL conectados. Siguiente hora: ' + response.next_expected_observed_at;
-    document.querySelector('#observed_at').value = response.next_expected_observed_at.slice(0, 16);
-  } catch (error) { document.querySelector('#connection').textContent = 'Error: ' + error.message; }
-}
-document.querySelector('#btnState').addEventListener('click', state);
-document.querySelector('#predictForm').addEventListener('submit', async event => {
-  event.preventDefault(); const button = event.target.querySelector('button'); button.disabled = true;
-  const el = document.querySelector('#predictStatus'); el.textContent = 'Generando 24 pronósticos...';
-  try {
-    const form = new FormData(event.target);
-    const payload = { observed_at: document.querySelector('#observed_at').value + ':00' };
-    for (const key of ['pm25','pm10','so2','no2','co','o3','temp','pres','dewp','rain','wspm']) {
-      const value = form.get(key); payload[key] = value === '' ? null : Number(value);
-    }
-    payload.wd = form.get('wd') || 'Desconocido';
-    const result = await api('/predict', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-    el.textContent = 'Predicción #' + result.id + ' · Modelo: ' + result.model_version;
-    const container = document.querySelector('#predictionTable'); container.replaceChildren(renderForecast(result.predictions));
-    await state();
-  } catch(error) {el.textContent = 'Error: ' + error.message;} finally {button.disabled=false;}
-});
-document.querySelector('#btnHistory').addEventListener('click', async () => {
-  const target = document.querySelector('#historyTable'); target.textContent = 'Consultando...';
-  try {
-    const rows = await api('/predictions?limit=20');
-    if (!rows.length) {target.textContent = 'Aún no hay predicciones.';return;}
-    const pre = document.createElement('pre'); pre.textContent = pretty(rows); target.replaceChildren(pre);
-  } catch(error) {target.textContent = error.message;}
-});
-document.querySelector('#btnMetrics').addEventListener('click', async () => {
-  const target = document.querySelector('#metricsResult');target.textContent = 'Consultando...';
-  try {target.textContent = pretty(await api('/metrics'));} catch(error) {target.textContent=error.message;}
-});
-document.querySelector('#uploadForm').addEventListener('submit',async event => {
-  event.preventDefault(); const target=document.querySelector('#uploadResult');target.textContent='Subiendo...';
-  const form = new FormData(); form.append('file', document.querySelector('#csvFile').files[0]);
-  try {target.textContent=pretty(await api('/training-data',{method:'POST',body:form}));await state();}
-  catch(error){target.textContent=error.message;}
-});
-document.querySelector('#btnRetrain').addEventListener('click',async () => {
-  if (!confirm('¿Ejecutar reentrenamiento? Puede consumir varios minutos.')) return;
-  const target=document.querySelector('#retrainResult');target.textContent='Reentrenando...';
-  const button=document.querySelector('#btnRetrain');button.disabled=true;
-  try {target.textContent=pretty(await api('/retrain',{method:'POST'}));}
-  catch(error){target.textContent=error.message;}finally{button.disabled=false;}
-});
-state();
-</script>
+
+      <article class="forecast-hero card">
+        <div class="hero-reading">
+          <span class="hero-label">Medición registrada</span>
+          <div class="hero-number"><strong id="current-pm">—</strong><span>µg/m³</span></div>
+          <p id="origin">Todavía no hay pronósticos.</p>
+        </div>
+        <div class="hero-arrow" aria-hidden="true">→</div>
+        <div class="hero-reading predicted-reading">
+          <span class="hero-label">PM2.5 estimado dentro de 6 horas</span>
+          <div class="hero-number"><strong id="forecast-value">—</strong><span>µg/m³</span></div>
+          <p id="forecast-target">Fecha objetivo: —</p>
+        </div>
+        <div class="hero-footer">
+          <span id="forecast-change" class="change-pill">Variación: —</span>
+          <span id="forecast-version" class="model-version">Sin modelo</span>
+        </div>
+      </article>
+
+      <div class="forecast-explanation card">
+        <div class="explanation-icon">↗</div>
+        <div>
+          <h2>¿Cómo interpretar este resultado?</h2>
+          <p>El valor mostrado es una estimación puntual para seis horas después de la medición registrada. No representa una certeza ni una medición ambiental en tiempo real.</p>
+        </div>
+      </div>
+
+      <article class="card measurement-card">
+        <div class="card-heading">
+          <div>
+            <span class="eyebrow">NUEVO REGISTRO</span>
+            <h2>Registrar medición</h2>
+            <p>El sistema asigna automáticamente la siguiente fecha y hora de la serie.</p>
+          </div>
+          <div class="next-time">
+            <small>Fecha que se asignará</small>
+            <strong id="next-date">—</strong>
+            <small>Hora local de la estación (Beijing)</small>
+          </div>
+        </div>
+        <form id="observation-form">
+          <fieldset id="obs-fields" disabled>
+            <div id="fields" class="measurement-grid"></div>
+            <div class="form-actions">
+              <button type="submit" class="button-primary">Registrar y pronosticar +6 h</button>
+            </div>
+          </fieldset>
+        </form>
+      </article>
+    </section>
+
+    <section id="training" class="section" hidden>
+      <div class="page-heading">
+        <div>
+          <span class="eyebrow">CICLO DEL MODELO</span>
+          <h1>Entrenamiento</h1>
+          <p>Importa el histórico de Wanliu y administra las versiones del modelo de seis horas.</p>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <article class="stat-card"><small>Observaciones históricas</small><strong id="historical-count">—</strong></article>
+        <article class="stat-card"><small>Mediciones nuevas simuladas</small><strong id="simulated-count">—</strong></article>
+        <article class="stat-card"><small>Modelo activo</small><strong id="active-version" class="version-text">Sin entrenar</strong></article>
+      </div>
+
+      <div class="two-columns">
+        <article class="card">
+          <span class="eyebrow">PRIMER ENTRENAMIENTO</span>
+          <h2>Entrenamiento inicial</h2>
+          <p>Si la base está vacía, selecciona el CSV histórico original de Wanliu. Si el histórico ya está guardado en PostgreSQL, el sistema lo reutilizará sin volver a importarlo.</p>
+          <label for="historical-file">Dataset histórico (CSV)</label>
+          <input id="historical-file" type="file" accept=".csv">
+          <button id="initial-btn" class="button-primary" disabled>Importar y entrenar</button>
+          <p id="initial-help" class="help-text">Se utiliza el histórico UCI de 35.064 registros. El entrenamiento inicial se realiza una sola vez.</p>
+        </article>
+
+        <article class="card">
+          <span class="eyebrow">ACTUALIZACIÓN DEL MODELO</span>
+          <h2>Reentrenamiento</h2>
+          <p>Combina el histórico original con las nuevas mediciones registradas individualmente y evalúa un modelo candidato.</p>
+          <div class="info-box">
+            Desde una medición nueva con objetivo conocido a +6 h, se ajusta un candidato con el histórico de entrenamiento y los ejemplos nuevos. Ambos modelos se comparan en una referencia histórica reservada, sin usarla para el ajuste. La comparación y cualquier promoción son demostrativas, no una validación de rendimiento futuro.
+          </div>
+          <button id="retrain-btn" class="button-primary" disabled>Evaluar y reentrenar</button>
+        </article>
+      </div>
+
+      <article id="training-result" class="card result-card" hidden></article>
+
+      <article class="card">
+        <div class="card-heading compact">
+          <div><h2>Versiones del modelo</h2><p>Se muestran las versiones compatibles con el pronóstico a seis horas.</p></div>
+          <button id="refresh-models" class="button-secondary">Actualizar</button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Versión</th><th>Tipo</th><th>Estado</th><th>Observaciones</th><th>Evaluación</th></tr></thead>
+            <tbody id="versions"><tr><td colspan="5">Sin modelos registrados.</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <section id="metrics" class="section" hidden>
+      <div class="page-heading">
+        <div>
+          <span class="eyebrow">EVALUACIÓN DEL MODELO</span>
+          <h1>Métricas de rendimiento</h1>
+          <p>Errores históricos de predicción a +6 horas. No son porcentajes de certeza de una predicción individual.</p>
+        </div>
+      </div>
+
+      <article class="card">
+        <div class="filter-grid">
+          <div><label for="metric-model">Versión del modelo</label><select id="metric-model"></select></div>
+          <div><label for="metric-set">Conjunto de evaluación</label><select id="metric-set"></select></div>
+        </div>
+        <p id="metric-caption" class="help-text">Entrena un modelo para consultar sus métricas.</p>
+      </article>
+
+      <div class="stats-grid metric-stats">
+        <article class="stat-card"><small>MAE · µg/m³</small><strong id="global-mae">—</strong><span>Error absoluto medio</span></article>
+        <article class="stat-card"><small>RMSE · µg/m³</small><strong id="global-rmse">—</strong><span>Penaliza más los errores grandes</span></article>
+        <article class="stat-card"><small>R²</small><strong id="global-r2">—</strong><span>Capacidad explicativa respecto a la media</span></article>
+      </div>
+
+      <article class="card">
+        <h2>Comparación con persistencia</h2>
+        <p>La persistencia supone que el PM2.5 dentro de seis horas será igual al PM2.5 de la medición actual.</p>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Referencia</th><th>MAE</th><th>RMSE</th><th>R²</th><th>Ejemplos</th></tr></thead>
+            <tbody id="metric-comparison"><tr><td colspan="5">Sin métricas disponibles.</td></tr></tbody>
+          </table>
+        </div>
+        <p id="metric-improvement" class="comparison-note"></p>
+      </article>
+
+      <article class="card">
+        <h2>Cómo se evaluó</h2>
+        <div id="evaluation-details" class="detail-grid"></div>
+      </article>
+    </section>
+
+    <section id="history" class="section" hidden>
+      <div class="page-heading">
+        <div>
+          <span class="eyebrow">TRAZABILIDAD</span>
+          <h1>Historial de pronósticos</h1>
+          <p>Consulta cada medición registrada y su única predicción a seis horas.</p>
+        </div>
+        <button id="refresh-history" class="button-secondary">Actualizar</button>
+      </div>
+      <article class="card">
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th>Origen</th><th>PM2.5 de entrada</th><th>Pronóstico +6 h</th><th>Fecha objetivo</th><th>Observado después</th><th>Error absoluto</th><th></th></tr></thead>
+            <tbody id="history-list"><tr><td colspan="7">Sin predicciones registradas.</td></tr></tbody>
+          </table>
+        </div>
+        <p class="help-text">La observación posterior y el error aparecen cuando se registra una medición para la fecha objetivo. Las mediciones ingresadas manualmente son simuladas.</p>
+      </article>
+      <article id="history-detail" class="card" hidden></article>
+    </section>
+  </main>
+
+  <footer>Wanliu Air Forecast · Prototipo académico · Dataset histórico UCI y mediciones simuladas.</footer>
+</div>
+
+<script src="app.js?v=6h-retrain-3" defer></script>
 </body>
 </html>
